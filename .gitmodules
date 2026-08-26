@@ -1,0 +1,3 @@
+[submodule "references/esm"]
+	path = references/esm
+	url = https://github.com/evolutionaryscale/esm.git
