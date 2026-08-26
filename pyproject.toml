@@ -1,17 +1,42 @@
 [project]
-name = "esm"
+name = "esmlab"
 version = "0.1.0"
-description = "Add your description here"
+description = "Scripts and library code for analyzing proteins with the ESM models"
 readme = "README.md"
 authors = [
     { name = "pmall", email = "pierre.mallinjoud@gmail.com" }
 ]
-requires-python = ">=3.14"
-dependencies = []
+requires-python = ">=3.12,<3.13"
+# Pinned to the commit of references/esm so the installed code matches the
+# documentation read from that submodule; bump the SHA together with it.
+dependencies = [
+    "esm @ git+https://github.com/evolutionaryscale/esm.git@43ccece2ad485f27db46afdb67da2a9601e8f106",
+    "matplotlib>=3.9",
+    "numpy>=2.1",
+]
 
-[project.scripts]
-esm = "esm:main"
+[dependency-groups]
+dev = [
+    "modal>=0.73",
+    "pytest>=8.3",
+    "pyright>=1.1.390",
+    "ruff>=0.8",
+]
+
+[tool.uv.build-backend]
+module-root = ""
 
 [build-system]
 requires = ["uv_build>=0.12.3,<0.13.0"]
 build-backend = "uv_build"
+
+[tool.ruff]
+extend-exclude = ["references"]
+
+[tool.pyright]
+include = ["esmlab", "scripts", "tests"]
+exclude = ["references"]
+typeCheckingMode = "standard"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
