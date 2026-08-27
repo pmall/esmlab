@@ -35,7 +35,11 @@ class ParamSpec:
 
 
 def load_env() -> None:
-    """Loads variables from a .env file into os.environ if present."""
+    """Loads variables from a .env file into os.environ if present.
+
+    Called once by the CLI entrypoint before :func:`resolve_params` runs so
+    that ``ParamSpec.env`` fallbacks (e.g. ``FORGE_API_KEY``) resolve.
+    """
     from dotenv import load_dotenv
 
     load_dotenv()
@@ -52,6 +56,10 @@ def resolve_params(
     Irrelevant CLI values (non-None but not in ``params``) raise. Each spec is
     resolved from the CLI value, then its env var, then its default; required
     specs with no value raise.
+
+    Called once per backend and once per cache from the CLI: the script passes
+    the matching ``PARAMS`` tuple (declared in each connector/cache module)
+    alongside the raw namespace values so backends stay self-contained.
     """
     spec_dests = {spec.dest for spec in params}
     for dest, value in cli_values.items():
@@ -98,6 +106,12 @@ class SequenceLogits:
 
 
 class ModelConnector(Protocol):
-    """One method is all analysis needs: mask each residue, read the logits."""
+    """One method is all analysis needs: mask each residue, read the logits.
 
-    def masked_sequence_logits(self, sequence: str) -> SequenceLogits: ...
+    Every backend (stub, local, forge, modal) implements this single method;
+    the cache layer wraps it without changing the contract.
+    """
+
+    def masked_sequence_logits(self, sequence: str) -> SequenceLogits:
+        """Returns per-position masked-logits for ``sequence`` (axis 0 aligns to residues)."""
+        ...

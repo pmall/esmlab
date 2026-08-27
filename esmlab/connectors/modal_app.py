@@ -42,6 +42,12 @@ PARAMS: tuple[ParamSpec, ...] = (
 
 @dataclass(frozen=True)
 class _RemoteLogits:
+    """Serializable :class:`SequenceLogits` payload crossing the Modal RPC boundary.
+
+    Plain-dataclass twin of :class:`SequenceLogits` with a concrete ``dict``
+    vocab so the result marshals back from the remote worker.
+    """
+
     sequence: str
     logits: npt.NDArray[np.float32]
     vocab: dict[str, int]
@@ -52,6 +58,11 @@ _connectors: dict[str, LocalConnector] = {}
 
 
 def _connector_for(model: str) -> LocalConnector:
+    """Returns the per-model :class:`LocalConnector`, creating it on first use.
+
+    Cached in ``_connectors`` so a warm Modal container reuses the loaded
+    checkpoint across calls instead of reloading on every request.
+    """
     if model not in _connectors:
         from esmlab.connectors.local import LocalConnector
 
@@ -60,6 +71,14 @@ def _connector_for(model: str) -> LocalConnector:
 
 
 def _build_app():
+    """Constructs the Modal ``App``/image and the remote ``masked_logits`` worker.
+
+    The image installs the upstream ``esm`` package plus this repo's
+    ``esmlab`` source so the worker can call :func:`_connector_for`. The
+    worker function runs on an A10G GPU with a 5-minute scaledown window to
+    keep the checkpoint warm between calls. Returns ``(app, masked_logits)``
+    for the caller to run.
+    """
     import modal
 
     # The upstream package installs its own dependency set (torch, CUDA wheels);
@@ -73,6 +92,7 @@ def _build_app():
 
     @app.function(gpu=_MODAL_GPU, scaledown_window=300)
     def masked_logits(sequence: str, model: str) -> _RemoteLogits:
+        """Remote entrypoint: scores ``sequence`` on the GPU container."""
         result = _connector_for(model).masked_sequence_logits(sequence)
         return _RemoteLogits(
             sequence=result.sequence,
@@ -87,6 +107,12 @@ class ModalConnector:
     """Calls the remote worker through the connector interface."""
 
     def __init__(self, model: str, *, token_id: str, token_secret: str) -> None:
+        """Stores the model id and publishes Modal credentials to the environment.
+
+        The credentials are written to ``os.environ`` because Modal's client
+        reads them on connect, which happens inside the lazy ``import modal``
+        within :meth:`masked_sequence_logits`.
+        """
         self._model = model
         # Modal's client reads these on connect; set them before the lazy
         # `import modal` inside masked_sequence_logits runs.
@@ -96,6 +122,13 @@ class ModalConnector:
             os.environ["MODAL_TOKEN_SECRET"] = token_secret
 
     def masked_sequence_logits(self, sequence: str) -> SequenceLogits:
+        """Runs one remote scoring call and rehydrates the result locally.
+
+        Builds the app via :func:`_build_app`, invokes the remote
+        ``masked_logits`` worker on a rented GPU, and converts the
+        :class:`_RemoteLogits` payload back into a :class:`SequenceLogits`
+        for the analysis pipeline.
+        """
         app, masked_logits = _build_app()
         with app.run():
             payload: _RemoteLogits = masked_logits.remote(sequence, model=self._model)

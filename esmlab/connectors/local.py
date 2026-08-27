@@ -31,7 +31,12 @@ PARAMS: tuple[ParamSpec, ...] = (
 
 
 def resolve_device(device: str) -> str:
-    """Maps the CLI device choice to a concrete torch device string."""
+    """Maps the CLI device choice to a concrete torch device string.
+
+    ``"auto"`` resolves to ``"cuda"`` when available else ``"cpu"``; the other
+    choices pass through unchanged. Called from
+    :meth:`LocalConnector.__init__`.
+    """
     if device != "auto":
         return device
     import torch
@@ -48,6 +53,14 @@ class LocalConnector:
     """
 
     def __init__(self, model: str, device: str = "auto", batch_size: int = 32) -> None:
+        """Loads the ESMC checkpoint once and keeps the tokenizer on device.
+
+        The model id (``esmc-300m``/``esmc-600m``) maps to a HuggingFace repo
+        published by EvolutionaryScale. ``device`` is resolved via
+        :func:`resolve_device`; ``batch_size`` bounds the forward-pass memory
+        used by :meth:`masked_sequence_logits`. Heavy imports (torch, esm) are
+        deferred so importing the package does not require the model stack.
+        """
         import torch
         from esm.models.esmc import EsmcForMaskedLM
         from esm.tokenization import get_esmc_model_tokenizers
@@ -67,6 +80,15 @@ class LocalConnector:
         self._tokenizer = get_esmc_model_tokenizers()
 
     def masked_sequence_logits(self, sequence: str) -> SequenceLogits:
+        """Runs leave-one-out masking on the loaded checkpoint.
+
+        Builds ``len(sequence)`` token-id copies, each with one residue
+        replaced by the mask token (offset by +1 to skip the leading ``<cls>``),
+        then runs forward passes in ``batch_size`` chunks and gathers the
+        prediction row at each masked position. Returns a
+        :class:`SequenceLogits` whose axis 0 maps one-to-one onto the
+        sequence residues, consumed by :mod:`esmlab.mutation_scoring`.
+        """
         torch = self._torch
         # Attribute access routes through BatchEncoding.__getattr__, avoiding
         # the imprecise subscript typing of its values.

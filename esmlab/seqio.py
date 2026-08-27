@@ -13,12 +13,21 @@ from esmlab.amino_acids import VALID_AMINO_ACIDS
 
 @dataclass(frozen=True)
 class NamedSequence:
+    """A protein sequence paired with its report name.
+
+    The unit of work flowing through the pipeline: :func:`parse_sequences`
+    produces them, :func:`run_analysis` consumes them, and the name becomes
+    the per-sequence output subdirectory.
+    """
+
     name: str
     sequence: str
 
 
 @dataclass(frozen=True)
 class InferenceMeta:
+    """Provenance stamped onto a console report (name, backend, model, time)."""
+
     name: str
     backend: str
     model: str
@@ -26,6 +35,12 @@ class InferenceMeta:
 
 
 def validate_sequence(sequence: str) -> str:
+    """Normalizes and validates one raw sequence against the canonical amino acids.
+
+    Strips whitespace, uppercases, and rejects empty input or any non-canonical
+    residue. Called by :func:`parse_sequences` for both positional and FASTA
+    inputs so downstream code only ever sees clean sequences.
+    """
     cleaned = sequence.strip().upper()
     invalid = sorted(set(cleaned) - set(VALID_AMINO_ACIDS))
     if not cleaned:
@@ -38,6 +53,13 @@ def validate_sequence(sequence: str) -> str:
 
 
 def sanitize_name(candidate: str, fallback: str) -> str:
+    """Turns an arbitrary FASTA header into a filesystem-safe report name.
+
+    Non-alphanumeric characters (except ``-_.``) become ``_`` and surrounding
+    underscores are stripped; an empty result falls back to ``fallback``. Used
+    by :func:`_parse_fasta` so each record's name can serve as an output
+    directory.
+    """
     cleaned = "".join(
         character if character.isalnum() or character in "-_." else "_"
         for character in candidate.strip()
@@ -46,6 +68,14 @@ def sanitize_name(candidate: str, fallback: str) -> str:
 
 
 def _parse_fasta(path: Path) -> list[NamedSequence]:
+    """Parses a single FASTA file into raw :class:`NamedSequence` records.
+
+    Headers (``>...``) open a record and are sanitized via
+    :func:`sanitize_name`; sequence lines accumulate until the next header.
+    Sequences are not validated here — :func:`parse_sequences` validates every
+    record after merging sources. Raises on sequence-before-header or no
+    records found.
+    """
     records: list[NamedSequence] = []
     header = ""
     chunks: list[str] = []
@@ -72,7 +102,13 @@ def _parse_fasta(path: Path) -> list[NamedSequence]:
 def parse_sequences(
     raw_sequences: list[str], fasta_paths: list[Path]
 ) -> list[NamedSequence]:
-    """Validates positional sequences and FASTA files into one named list."""
+    """Validates positional sequences and FASTA files into one named list.
+
+    Positional sequences are named ``seq_01``, ``seq_02``, ...; FASTA records
+    keep their sanitized headers. Every record is validated by
+    :func:`validate_sequence`, duplicate names and empty input are rejected.
+    The returned list is what :func:`run_analysis` iterates over.
+    """
     sequences: list[NamedSequence] = []
     for index, raw in enumerate(raw_sequences, start=1):
         sequences.append(NamedSequence(f"seq_{index:02d}", validate_sequence(raw)))

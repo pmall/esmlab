@@ -13,6 +13,14 @@ from esmlab.seqio import parse_sequences
 
 
 def _build_parser() -> argparse.ArgumentParser:
+    """Builds the argparse parser, including backend/cache ParamSpec flags.
+
+    Core flags (sequences, --fasta, --backend, --model, --threshold, --top,
+    --out, --cache) are declared directly; per-backend and per-cache flags
+    are generated from the co-located ``ParamSpec`` tuples so adding a
+    parameter only touches its own module. Defaults of ``None`` let
+    :func:`resolve_params` distinguish "not given" from "given".
+    """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("sequences", nargs="*", help="Raw amino acid sequences")
     parser.add_argument(
@@ -79,6 +87,14 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _analyze(args: argparse.Namespace) -> int:
+    """Logic for one run: resolve params, build settings, run the analysis.
+
+    Loads ``.env``, resolves backend and cache parameters via
+    :func:`resolve_params` (which validates that only relevant flags were
+    given), parses the input sequences into :class:`NamedSequence` objects,
+    assembles an :class:`AnalysisSettings`, calls :func:`run_analysis`, and
+    prints the list of written artifacts. Returns the process exit code.
+    """
     load_env()
     backend_cli: dict[str, str | int | Path | None] = {
         "device": args.device,
@@ -119,6 +135,12 @@ def _analyze(args: argparse.Namespace) -> int:
 
 
 def main() -> int:
+    """Entrypoint: parse CLI args and delegate to :func:`_analyze`.
+
+    Per the repo's script convention this only parses parameters and forwards
+    to the logic function; ``ValueError`` from validation is surfaced through
+    argparse as a CLI error. Returns the exit code.
+    """
     parser = _build_parser()
     args = parser.parse_args()
     try:

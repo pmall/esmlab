@@ -13,6 +13,11 @@ def _settings(
     cache: str = "null",
     cache_root: Path | None = None,
 ) -> AnalysisSettings:
+    """Builds an :class:`AnalysisSettings` wired to the stub backend.
+
+    The stub needs no real credentials, so the backend fields are blanked;
+    callers override ``threshold``/``cache`` to exercise specific paths.
+    """
     return AnalysisSettings(
         backend="stub",
         model="esmc-600m",
@@ -31,6 +36,7 @@ def _settings(
 
 
 def test_analysis_produces_all_artifacts(tmp_path: Path) -> None:
+    """One run writes the three plots plus the summary CSV, with the expected header."""
     artifacts = run_analysis(_settings(tmp_path))
     assert {path.name for path in artifacts} == {
         "entropy.png",
@@ -47,7 +53,10 @@ def test_analysis_produces_all_artifacts(tmp_path: Path) -> None:
 
 
 def test_analysis_is_rerunnable_with_new_threshold(tmp_path: Path) -> None:
+    """Re-running with a looser threshold marks more positions tolerant."""
+
     def tolerant_column(threshold: float) -> list[str]:
+        """Runs the analysis at ``threshold`` and returns the tolerant column."""
         run_analysis(_settings(tmp_path, threshold=threshold))
         return [
             line.split(",")[4]
@@ -61,6 +70,7 @@ def test_analysis_is_rerunnable_with_new_threshold(tmp_path: Path) -> None:
 
 
 def test_analysis_with_file_cache_stores_logits(tmp_path: Path) -> None:
+    """With the file cache, one run writes a single logits+meta cache entry."""
     cache_dir = tmp_path / "cache"
     run_analysis(_settings(tmp_path, cache="file", cache_root=cache_dir))
 

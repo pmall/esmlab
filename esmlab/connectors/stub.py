@@ -15,6 +15,12 @@ PARAMS: tuple[ParamSpec, ...] = ()
 
 
 def _stable_seed(model: str, sequence: str) -> int:
+    """Deterministic 64-bit seed derived from the model id and sequence.
+
+    ``hash()`` is salted per process, so this content hash guarantees the stub
+    produces reproducible logits across runs for a given (model, sequence).
+    Consumed by :meth:`StubConnector.masked_sequence_logits` to seed the RNG.
+    """
     # hash() is salted per process, so use a content hash for reproducibility.
     digest = hashlib.blake2b(f"{model}|{sequence}".encode(), digest_size=8).digest()
     return int.from_bytes(digest)
@@ -32,6 +38,17 @@ class StubConnector:
         self._model = model
 
     def masked_sequence_logits(self, sequence: str) -> SequenceLogits:
+        """Synthesizes one log-probability row per residue for ``sequence``.
+
+        For each position a Dirichlet draw over the 20 amino acids is boosted
+        toward the wildtype residue, producing varied entropies and
+        deleterious fractions that exercise every branch of the analysis. The
+        output is seeded from :func:`_stable_seed` so results are reproducible
+        per (model, sequence) and feed directly into the pure-CPU math in
+        :mod:`esmlab.mutation_scoring`. Satisfies the
+        :class:`ModelConnector` protocol and is the default backend used by
+        tests and the CLI when no model is available.
+        """
         rng = np.random.default_rng(_stable_seed(self._model, sequence))
         rows: list[npt.NDArray[np.float32]] = []
         for wildtype in sequence:

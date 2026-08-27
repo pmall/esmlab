@@ -18,6 +18,7 @@ VOCAB = len(VALID_AMINO_ACIDS)
 
 
 def test_uniform_entropy_matches_log2_of_alphabet() -> None:
+    """Uniform-over-k rows must yield entropy log2(k) at every position."""
     for alphabet_size in (2, 4, 8, 16, 20):
         result = make_result("AAA", uniform_rows("AAA", alphabet_size))
         entropies = entropy_per_position(result)
@@ -25,11 +26,13 @@ def test_uniform_entropy_matches_log2_of_alphabet() -> None:
 
 
 def test_sharp_distribution_has_zero_entropy() -> None:
+    """A one-hot distribution (all mass on the wildtype) has zero entropy."""
     result = make_result("AC", one_hot_rows("AC", {}))
     assert entropy_per_position(result) == pytest.approx([0.0, 0.0])
 
 
 def test_llr_wildtype_column_is_zero_and_preferred_alternative_is_positive() -> None:
+    """Wildtype LLR is 0 by construction and preferred alternatives are positive."""
     # Position 0: model prefers C and G over the wildtype A. Position 1: flat.
     rows = [
         [1.0 if aa in ("C", "G") else 0.0 for aa in VALID_AMINO_ACIDS],
@@ -43,6 +46,7 @@ def test_llr_wildtype_column_is_zero_and_preferred_alternative_is_positive() -> 
 
 
 def test_deleterious_fraction_counts_negative_non_wildtype_entries() -> None:
+    """Deleterious fraction is the count of negative non-wildtype LLRs over 19."""
     llr = np.zeros((2, VOCAB))
     for row in range(2):
         wt_column = (3, 7)[row]
@@ -55,11 +59,13 @@ def test_deleterious_fraction_counts_negative_non_wildtype_entries() -> None:
 
 
 def test_tolerant_positions_uses_strict_threshold_comparison() -> None:
+    """Only positions strictly below the threshold are returned (boundary excluded)."""
     fractions = np.array([0.10, 0.80, 0.79])
     assert tolerant_positions(fractions, threshold=0.8).tolist() == [0, 2]
 
 
 def test_rank_substitutions_orders_descending_and_skips_wildtype() -> None:
+    """Ranking is descending by LLR and never includes wildtype self-substitutions."""
     llr = np.full((2, VOCAB), -0.5)
     llr[0, VALID_AMINO_ACIDS.index("W")] = 2.0
     llr[0, VALID_AMINO_ACIDS.index("V")] = 1.0
@@ -74,4 +80,5 @@ def test_rank_substitutions_orders_descending_and_skips_wildtype() -> None:
 
 
 def test_uniform_entropy_bits_helper() -> None:
+    """The reference helper returns log2 of the alphabet size."""
     assert uniform_entropy_bits(20) == math.log2(20)

@@ -1,4 +1,9 @@
-"""Matplotlib renderings of the mutation-analysis outputs (PNG files only)."""
+"""Matplotlib renderings of the mutation-analysis outputs (PNG files only).
+
+Each function takes arrays produced by :mod:`esmlab.mutation_scoring` and is
+called by :func:`esmlab.pipeline.run_analysis`, which also owns the output
+paths. ``Agg`` is forced so rendering works headless (and in the test suite).
+"""
 
 from pathlib import Path
 
@@ -17,7 +22,12 @@ from esmlab.mutation_scoring import uniform_entropy_bits
 def plot_entropy(
     entropies: npt.NDArray[np.float64], sequence: str, out_path: Path
 ) -> Path:
-    """Per-position entropy bars with uniform-distribution reference lines."""
+    """Per-position entropy bars with uniform-distribution reference lines.
+
+    Called by :func:`run_analysis` with the output of
+    :func:`entropy_per_position`; writes the PNG to ``out_path`` and returns
+    that path so the caller can track artifacts.
+    """
     positions = np.arange(1, len(entropies) + 1)
     plt.figure(figsize=(16, 4))
     plt.bar(positions, entropies, color="skyblue")
@@ -49,6 +59,9 @@ def plot_deleterious_fraction(
 
     Positions below the dashed line tolerate enough substitutions to make
     them candidate sites for library design.
+
+    Called by :func:`run_analysis` with the output of
+    :func:`deleterious_fraction_per_position`.
     """
     positions = np.arange(1, len(fractions) + 1)
     plt.figure(figsize=(16, 4))
@@ -76,7 +89,13 @@ def plot_deleterious_fraction(
 def plot_llr_heatmap(
     llr: npt.NDArray[np.float64], sequence: str, out_path: Path
 ) -> Path:
-    """All single-substitution LLRs; rows are amino acids by descending pI."""
+    """All single-substitution LLRs; rows are amino acids by descending pI.
+
+    Called by :func:`run_analysis` with the output of :func:`llr_matrix`;
+    rows are reordered by isoelectric point (from
+    :data:`AA_TO_ISOELECTRIC_POINT`) and centered on zero so red/blue mark
+    deleterious vs. tolerated substitutions.
+    """
     aa_by_pI = sorted(
         AA_TO_ISOELECTRIC_POINT,
         key=lambda aa: AA_TO_ISOELECTRIC_POINT[aa],
