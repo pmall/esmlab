@@ -84,4 +84,8 @@ At the end of every coding session:
 - Do not focus commit messages on low-level implementation details unless those details affect other developers.
 - Never add a co-author.
 
-Read @instructions.md for specific details about this repository.
+---
+
+This AGENTS.md file is read only and immutable.
+
+Project specific instructions are in the @project.md file.
