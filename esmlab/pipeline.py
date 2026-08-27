@@ -1,6 +1,12 @@
-"""Orchestration of the two CLI stages: inference runs and offline reports."""
+"""Orchestration of the unified mutation-analysis CLI stage.
+
+Inference and reporting run in one pass: the connector (cache-decorated in
+``get_connector``) serves cached logits on hit and recomputes on miss, then
+the pure-CPU analysis derives entropy, LLR, and the report artifacts.
+"""
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
@@ -17,7 +23,7 @@ from esmlab.mutation_scoring import (
     tolerant_positions,
 )
 from esmlab.plotting import plot_deleterious_fraction, plot_entropy, plot_llr_heatmap
-from esmlab.seqio import InferenceMeta, NamedSequence, load_inference, save_inference
+from esmlab.seqio import InferenceMeta, NamedSequence
 
 SUMMARY_COLUMNS = (
     "position",
@@ -31,21 +37,20 @@ SUMMARY_COLUMNS = (
 
 
 @dataclass(frozen=True)
-class InferSettings:
+class AnalysisSettings:
     backend: str
     model: str
     device: str
     batch_size: int
-    api_key: str
+    forge_api_key: str
+    modal_token_id: str
+    modal_token_secret: str
     sequences: list[NamedSequence]
     out_dir: Path
-
-
-@dataclass(frozen=True)
-class ReportSettings:
-    run_dirs: list[Path]
     threshold: float
     top_k: int
+    cache: str
+    cache_root: Path | None
 
 
 def _print_top_positions(
@@ -120,55 +125,45 @@ def _summary_lines(
     return lines
 
 
-def run_inference(settings: InferSettings) -> list[Path]:
-    """Runs masked inference per sequence and stores the intermediate format."""
+def run_analysis(settings: AnalysisSettings) -> list[Path]:
+    """Scores each sequence (cache-aware) and writes plots, CSV, and a console report."""
     connector = get_connector(
         settings.backend,
         settings.model,
         device=settings.device,
         batch_size=settings.batch_size,
-        api_key=settings.api_key,
+        forge_api_key=settings.forge_api_key,
+        modal_token_id=settings.modal_token_id,
+        modal_token_secret=settings.modal_token_secret,
+        cache=settings.cache,
+        cache_root=settings.cache_root,
     )
-    run_paths: list[Path] = []
+    artifacts: list[Path] = []
     for named in settings.sequences:
         print(
-            f"[infer] {named.name} (L={len(named.sequence)}) "
+            f"[analyze] {named.name} (L={len(named.sequence)}) "
             f"via {settings.backend}/{settings.model} ..."
         )
         result = connector.masked_sequence_logits(named.sequence)
-        run_path = save_inference(
-            settings.out_dir / named.name,
-            result,
-            backend=settings.backend,
-            model=settings.model,
-        )
-        run_paths.append(run_path)
-        print(f"[infer] wrote {run_path}")
-    return run_paths
-
-
-def run_report(settings: ReportSettings) -> list[Path]:
-    """Rebuilds plots, CSV summary, and console report from stored logits."""
-    artifacts: list[Path] = []
-    for run_dir in settings.run_dirs:
-        result, meta = load_inference(run_dir)
         entropies = entropy_per_position(result)
         llr = llr_matrix(result)
         fractions = deleterious_fraction_per_position(llr)
 
+        report_dir = settings.out_dir / named.name
+        report_dir.mkdir(parents=True, exist_ok=True)
         artifacts.append(
-            plot_entropy(entropies, result.sequence, run_dir / "entropy.png")
+            plot_entropy(entropies, result.sequence, report_dir / "entropy.png")
         )
         artifacts.append(
             plot_deleterious_fraction(
-                fractions, settings.threshold, run_dir / "deleterious_fraction.png"
+                fractions, settings.threshold, report_dir / "deleterious_fraction.png"
             )
         )
         artifacts.append(
-            plot_llr_heatmap(llr, result.sequence, run_dir / "llr_heatmap.png")
+            plot_llr_heatmap(llr, result.sequence, report_dir / "llr_heatmap.png")
         )
 
-        summary_path = run_dir / "summary.csv"
+        summary_path = report_dir / "summary.csv"
         summary_path.write_text(
             "\n".join(
                 _summary_lines(result, entropies, fractions, llr, settings.threshold)
@@ -177,6 +172,12 @@ def run_report(settings: ReportSettings) -> list[Path]:
         )
         artifacts.append(summary_path)
 
+        meta = InferenceMeta(
+            name=named.name,
+            backend=settings.backend,
+            model=settings.model,
+            created_utc=datetime.now(UTC).isoformat(),
+        )
         _print_report(
             result, meta, entropies, fractions, llr, settings.threshold, settings.top_k
         )

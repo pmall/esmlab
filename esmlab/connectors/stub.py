@@ -6,10 +6,12 @@ import numpy as np
 import numpy.typing as npt
 
 from esmlab.amino_acids import VALID_AMINO_ACIDS
-from esmlab.connectors.base import SequenceLogits
+from esmlab.connectors.base import ParamSpec, SequenceLogits
 
 # Vocabulary of the stub backend: one column per canonical amino acid.
 STUB_VOCAB: dict[str, int] = {aa: index for index, aa in enumerate(VALID_AMINO_ACIDS)}
+
+PARAMS: tuple[ParamSpec, ...] = ()
 
 
 def _stable_seed(model: str, sequence: str) -> int:

@@ -13,6 +13,7 @@ dependencies = [
     "esm @ git+https://github.com/evolutionaryscale/esm.git@43ccece2ad485f27db46afdb67da2a9601e8f106",
     "matplotlib>=3.9",
     "numpy>=2.1",
+    "python-dotenv>=1.0",
 ]
 
 [dependency-groups]

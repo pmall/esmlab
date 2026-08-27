@@ -31,6 +31,17 @@ official ESM protein language models from EvolutionaryScale/Biohub.
 - Pure logic (entropy, LLR math, parsing, plotting, I/O) stays separate from
   model calls so it runs and is tested on CPU; model-dependent paths are
   tested with the stub backend.
+- Backend credentials are loaded from `.env` via python-dotenv:
+  `FORGE_API_KEY`, `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET`; CLI flags override.
+  The CLI validates parameters per chosen backend and cache.
+
+## Caching
+
+- `CachedConnector` wraps any backend with a `CacheStore` (`null` for
+  passthrough, `file` for a content-addressed logits cache under `data/`).
+  Cache key is `(model, backend, sequence)`.
+- One script, `mutation_analysis.py`, scores and reports in one pass;
+  `--cache` selects the store and the CLI validates params per backend/cache.
 
 ## Reference map
 

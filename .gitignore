@@ -9,5 +9,8 @@ wheels/
 # Virtual environments
 .venv
 
-# Generated analysis outputs
-runs/
+# Environment files with secrets
+.env
+
+# Generated analysis outputs (cached logits and reports)
+data/

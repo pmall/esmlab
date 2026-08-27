@@ -1,20 +1,14 @@
-"""Sequence parsing plus read/write of the on-disk inference format.
+"""Sequence parsing and the shared domain types for inference artifacts.
 
-The intermediate format decouples the costly inference step from reporting:
-``infer`` writes one run directory per sequence (logits + metadata JSON),
-``report`` reads those directories back without ever touching a backend.
+``NamedSequence``/``InferenceMeta`` are the lightweight records flowing between
+parsing, the cache, and the report; logits persistence itself lives in
+:mod:`esmlab.cache`.
 """
 
-import json
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path
 
-import numpy as np
-import numpy.typing as npt
-
 from esmlab.amino_acids import VALID_AMINO_ACIDS
-from esmlab.connectors.base import SequenceLogits
 
 
 @dataclass(frozen=True)
@@ -94,53 +88,3 @@ def parse_sequences(
     if not sequences:
         raise ValueError("No input sequences given")
     return sequences
-
-
-LOGITS_FILE = "logits.npz"
-META_FILE = "meta.json"
-
-
-def save_inference(
-    run_dir: Path,
-    result: SequenceLogits,
-    *,
-    backend: str,
-    model: str,
-) -> Path:
-    """Writes one run directory holding the reusable intermediate format."""
-    meta = InferenceMeta(
-        name=run_dir.name,
-        backend=backend,
-        model=model,
-        created_utc=datetime.now(UTC).isoformat(),
-    )
-    run_dir.mkdir(parents=True, exist_ok=False)
-    np.savez_compressed(run_dir / LOGITS_FILE, logits=result.logits)
-    payload = {
-        "name": meta.name,
-        "backend": meta.backend,
-        "model": meta.model,
-        "created_utc": meta.created_utc,
-        "sequence": result.sequence,
-        # Vocab is stored so reports never need to import the tokenizer.
-        "vocab": dict(result.vocab),
-    }
-    (run_dir / META_FILE).write_text(json.dumps(payload))
-    return run_dir
-
-
-def load_inference(run_dir: Path) -> tuple[SequenceLogits, InferenceMeta]:
-    payload = json.loads((run_dir / META_FILE).read_text())
-    logits: npt.NDArray[np.float32] = np.load(run_dir / LOGITS_FILE)["logits"]
-    result = SequenceLogits(
-        sequence=payload["sequence"],
-        logits=logits,
-        vocab=payload["vocab"],
-    )
-    meta = InferenceMeta(
-        name=payload["name"],
-        backend=payload["backend"],
-        model=payload["model"],
-        created_utc=payload["created_utc"],
-    )
-    return result, meta

@@ -2,13 +2,32 @@
 
 import numpy as np
 
-from esmlab.connectors.base import SequenceLogits
+from esmlab.connectors.base import ParamSpec, SequenceLogits
 
 # Canonical model ids -> HuggingFace repos published by EvolutionaryScale.
 LOCAL_MODEL_REPOS = {
     "esmc-300m": "biohub/ESMC-300M",
     "esmc-600m": "biohub/ESMC-600M",
 }
+
+PARAMS: tuple[ParamSpec, ...] = (
+    ParamSpec(
+        flag="--device",
+        dest="device",
+        env="",
+        help="Torch device for the local backend (default: auto-detect)",
+        choices=("auto", "cpu", "cuda"),
+        default="auto",
+    ),
+    ParamSpec(
+        flag="--batch-size",
+        dest="batch_size",
+        env="",
+        help="Masked variants per forward pass on the local backend",
+        type=int,
+        default=32,
+    ),
+)
 
 
 def resolve_device(device: str) -> str:

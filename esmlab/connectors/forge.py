@@ -1,14 +1,24 @@
-"""Forge API backend (hosted inference, requires an ESM_API_KEY)."""
+"""Forge API backend (hosted inference, requires a FORGE_API_KEY)."""
 
 import numpy as np
 
-from esmlab.connectors.base import SequenceLogits
+from esmlab.connectors.base import ParamSpec, SequenceLogits
 
 # Canonical model ids -> Forge model names.
 FORGE_MODEL_NAMES = {
     "esmc-300m": "esmc-300m-2024-12",
     "esmc-600m": "esmc-600m-2024-12",
 }
+
+PARAMS: tuple[ParamSpec, ...] = (
+    ParamSpec(
+        flag="--forge-api-key",
+        dest="forge_api_key",
+        env="FORGE_API_KEY",
+        help="Forge API token (defaults to $FORGE_API_KEY from .env)",
+        required=True,
+    ),
+)
 
 
 class ForgeConnector:

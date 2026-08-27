@@ -7,19 +7,37 @@ Not exercised yet in this repo (needs a Modal account). The worker mirrors
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import numpy as np
 import numpy.typing as npt
 
-from esmlab.connectors.base import SequenceLogits
+from esmlab.connectors.base import ParamSpec, SequenceLogits
 
 if TYPE_CHECKING:
     from esmlab.connectors.local import LocalConnector
 
 _MODAL_APP_NAME = "esmlab-esmc"
 _MODAL_GPU = "A10G"
+
+PARAMS: tuple[ParamSpec, ...] = (
+    ParamSpec(
+        flag="--modal-token-id",
+        dest="modal_token_id",
+        env="MODAL_TOKEN_ID",
+        help="Modal token id (defaults to $MODAL_TOKEN_ID from .env)",
+        required=True,
+    ),
+    ParamSpec(
+        flag="--modal-token-secret",
+        dest="modal_token_secret",
+        env="MODAL_TOKEN_SECRET",
+        help="Modal token secret (defaults to $MODAL_TOKEN_SECRET from .env)",
+        required=True,
+    ),
+)
 
 
 @dataclass(frozen=True)
@@ -68,8 +86,14 @@ def _build_app():
 class ModalConnector:
     """Calls the remote worker through the connector interface."""
 
-    def __init__(self, model: str) -> None:
+    def __init__(self, model: str, *, token_id: str, token_secret: str) -> None:
         self._model = model
+        # Modal's client reads these on connect; set them before the lazy
+        # `import modal` inside masked_sequence_logits runs.
+        if token_id:
+            os.environ["MODAL_TOKEN_ID"] = token_id
+        if token_secret:
+            os.environ["MODAL_TOKEN_SECRET"] = token_secret
 
     def masked_sequence_logits(self, sequence: str) -> SequenceLogits:
         app, masked_logits = _build_app()
