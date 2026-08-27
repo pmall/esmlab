@@ -545,6 +545,7 @@ dependencies = [
     { name = "matplotlib" },
     { name = "numpy" },
     { name = "python-dotenv" },
+    { name = "tqdm" },
 ]
 
 [package.dev-dependencies]
@@ -561,6 +562,7 @@ requires-dist = [
     { name = "matplotlib", specifier = ">=3.9" },
     { name = "numpy", specifier = ">=2.1" },
     { name = "python-dotenv", specifier = ">=1.0" },
+    { name = "tqdm", specifier = ">=4.70.0" },
 ]
 
 [package.metadata.requires-dev]

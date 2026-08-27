@@ -137,3 +137,7 @@ class ModalConnector:
             logits=np.asarray(payload.logits, dtype=np.float32),
             vocab=payload.vocab,
         )
+
+    def peak_memory_bytes(self) -> None:
+        """Inference runs on a rented remote GPU; client-side memory is not observable."""
+        return

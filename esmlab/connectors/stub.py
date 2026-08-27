@@ -62,3 +62,7 @@ class StubConnector:
             logits=np.stack(rows),
             vocab=dict(STUB_VOCAB),
         )
+
+    def peak_memory_bytes(self) -> None:
+        """The stub allocates only small numpy arrays; no observable memory peak."""
+        return

@@ -162,18 +162,31 @@ class CachedConnector:
         self._store = store
         self._model = model
         self._backend = backend
+        self._last_cache_hit = False
+
+    @property
+    def last_cache_hit(self) -> bool:
+        """Whether the most recent :meth:`masked_sequence_logits` call served a hit."""
+        return self._last_cache_hit
+
+    def peak_memory_bytes(self) -> int | None:
+        """Delegates to the inner connector's peak-memory report, if any."""
+        return self._inner.peak_memory_bytes()
 
     def masked_sequence_logits(self, sequence: str) -> SequenceLogits:
         """Serves a cache hit, or computes via the inner connector and stores it.
 
         Built by :func:`esmlab.connectors.get_connector`; the analysis pipeline
         calls only this method, so cache behavior is transparent to callers.
+        Records hit/miss in :attr:`last_cache_hit` for the perf report.
         """
         cached = self._store.get(
             model=self._model, backend=self._backend, sequence=sequence
         )
         if cached is not None:
+            self._last_cache_hit = True
             return cached
+        self._last_cache_hit = False
         result = self._inner.masked_sequence_logits(sequence)
         self._store.put(result, model=self._model, backend=self._backend)
         return result

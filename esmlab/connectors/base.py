@@ -106,12 +106,25 @@ class SequenceLogits:
 
 
 class ModelConnector(Protocol):
-    """One method is all analysis needs: mask each residue, read the logits.
+    """Backend contract: mask each residue, read the logits, plus memory reporting.
 
-    Every backend (stub, local, forge, modal) implements this single method;
-    the cache layer wraps it without changing the contract.
+    Every backend (stub, local, forge, modal) implements
+    :meth:`masked_sequence_logits`; the cache layer wraps it without changing
+    the contract. :meth:`peak_memory_bytes` exposes the peak memory of the last
+    call where the backend can observe it (CUDA on the local backend); it
+    returns ``None`` for backends with no observable memory (stub, forge, modal,
+    or the local backend on CPU).
     """
 
     def masked_sequence_logits(self, sequence: str) -> SequenceLogits:
         """Returns per-position masked-logits for ``sequence`` (axis 0 aligns to residues)."""
+        ...
+
+    def peak_memory_bytes(self) -> int | None:
+        """Peak memory of the last :meth:`masked_sequence_logits` call, or ``None``.
+
+        ``None`` means the backend cannot observe memory (stub, forge, modal,
+        or the local backend on CPU). The local backend on CUDA returns
+        ``torch.cuda.max_memory_allocated`` reset around each call.
+        """
         ...

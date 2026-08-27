@@ -84,3 +84,7 @@ class ForgeConnector:
             logits=rows.float().cpu().numpy().astype(np.float32),
             vocab=get_esmc_model_tokenizers().get_vocab(),
         )
+
+    def peak_memory_bytes(self) -> None:
+        """Inference runs on the hosted Forge API; client-side memory is not observable."""
+        return

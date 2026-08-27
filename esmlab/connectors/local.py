@@ -78,6 +78,7 @@ class LocalConnector:
         self._device = resolved_device
         self._batch_size = batch_size
         self._tokenizer = get_esmc_model_tokenizers()
+        self._last_peak_memory_bytes: int | None = None
 
     def masked_sequence_logits(self, sequence: str) -> SequenceLogits:
         """Runs leave-one-out masking on the loaded checkpoint.
@@ -105,6 +106,8 @@ class LocalConnector:
             variants.append(variant)
 
         rows = []
+        if self._device == "cuda":
+            torch.cuda.reset_peak_memory_stats(self._device)
         for start in range(0, sequence_length, self._batch_size):
             chunk = variants[start : start + self._batch_size]
             input_ids = torch.tensor(chunk, dtype=torch.long, device=self._device)
@@ -112,6 +115,12 @@ class LocalConnector:
                 output = self._model(input_ids=input_ids)
             positions = torch.arange(start, start + len(chunk)) + 1
             rows.append(output.logits[torch.arange(len(chunk)), positions])
+        if self._device == "cuda":
+            self._last_peak_memory_bytes = int(
+                torch.cuda.max_memory_allocated(self._device)
+            )
+        else:
+            self._last_peak_memory_bytes = None
 
         stacked = torch.cat(rows).float().cpu().numpy().astype(np.float32)
         return SequenceLogits(
@@ -119,3 +128,12 @@ class LocalConnector:
             logits=stacked,
             vocab=self._tokenizer.get_vocab(),
         )
+
+    def peak_memory_bytes(self) -> int | None:
+        """Peak CUDA memory of the last forward pass, or ``None`` on CPU.
+
+        Set by :meth:`masked_sequence_logits` from
+        ``torch.cuda.max_memory_allocated`` (reset around each call). Returns
+        ``None`` on CPU, where there is no observable allocator.
+        """
+        return self._last_peak_memory_bytes

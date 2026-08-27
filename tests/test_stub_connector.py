@@ -39,3 +39,8 @@ def test_stub_rows_are_valid_log_distributions() -> None:
     probs = np.exp(result.logits.astype(np.float64))
     assert np.all(probs.sum(axis=1) == pytest.approx(1.0))
     assert np.all(result.logits > -np.inf)
+
+
+def test_stub_peak_memory_is_unobservable() -> None:
+    """The stub allocates only small numpy arrays, so peak_memory_bytes is None."""
+    assert StubConnector("esmc-600m").peak_memory_bytes() is None

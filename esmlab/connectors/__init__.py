@@ -1,12 +1,18 @@
 """Single entry point for building backend connectors."""
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from esmlab.connectors.base import CANONICAL_MODELS, ModelConnector, ParamSpec
 from esmlab.connectors.forge import PARAMS as _FORGE_PARAMS
 from esmlab.connectors.local import PARAMS as _LOCAL_PARAMS
 from esmlab.connectors.modal_app import PARAMS as _MODAL_PARAMS
 from esmlab.connectors.stub import PARAMS as _STUB_PARAMS
+
+if TYPE_CHECKING:
+    # Imported lazily at runtime in get_connector to avoid a circular import
+    # (cache.py imports from connectors.base, which triggers this __init__).
+    from esmlab.cache import CachedConnector
 
 BACKEND_PARAMS: dict[str, tuple[ParamSpec, ...]] = {
     "stub": _STUB_PARAMS,
@@ -31,13 +37,15 @@ def get_connector(
     modal_token_secret: str,
     cache: str,
     cache_root: Path | None,
-) -> ModelConnector:
+) -> "CachedConnector":
     """Builds the connector selected by ``backend``, always cache-wrapped.
 
     Each backend branch passes only its relevant parameters; the result is
     wrapped in a :class:`CachedConnector` with the store selected by ``cache``.
     No backend is special-cased — callers always receive a cache-decorated
-    connector.
+    connector, which is why the return type is the concrete
+    :class:`CachedConnector` rather than the bare :class:`ModelConnector`
+    protocol.
     """
     # Imported lazily to avoid a circular import: cache.py imports from
     # connectors.base, which triggers this package's __init__.

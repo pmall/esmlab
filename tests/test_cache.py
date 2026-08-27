@@ -68,6 +68,10 @@ class _CountingConnector:
         self.calls += 1
         return self._inner.masked_sequence_logits(sequence)
 
+    def peak_memory_bytes(self) -> None:
+        """The stub has no observable memory; mirrors :meth:`StubConnector`."""
+        return
+
 
 def test_cached_connector_stores_miss_and_serves_hit(tmp_path: Path) -> None:
     """A miss calls the inner connector; the next call is served from the cache without re-calling."""

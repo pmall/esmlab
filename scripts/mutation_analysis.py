@@ -63,6 +63,12 @@ def _build_parser() -> argparse.ArgumentParser:
         default="null",
         help="Logits cache store (default: null, no caching)",
     )
+    parser.add_argument(
+        "--perf-report",
+        type=Path,
+        default=Path("data/performance.csv"),
+        help="Longitudinal perf CSV appended to per run (default: data/performance.csv)",
+    )
     # Backend and cache parameters are built from co-located ParamSpec tuples.
     # default=None lets resolve_params tell "not given" from "given".
     for spec in ALL_BACKEND_PARAMS:
@@ -126,6 +132,7 @@ def _analyze(args: argparse.Namespace) -> int:
         top_k=args.top,
         cache=args.cache,
         cache_root=cast(Path | None, cache_resolved.get("cache_root")),
+        perf_report=args.perf_report,
     )
     artifacts = run_analysis(settings)
     print(f"\nWrote {len(artifacts)} artifact(s):")
