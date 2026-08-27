@@ -70,7 +70,7 @@ class AnalysisSettings:
     model: str
     device: str
     batch_size: int
-    forge_api_key: str
+    biohub_api_key: str
     modal_token_id: str
     modal_token_secret: str
     sequences: list[NamedSequence]
@@ -87,7 +87,7 @@ class _SeqTiming:
     """One sequence's performance record, collected during :func:`run_analysis`.
 
     ``gpu_peak_bytes`` is ``None`` when the backend cannot observe memory
-    (stub, forge, modal, or the local backend on CPU).
+    (stub, biohub, modal, or the local backend on CPU).
     """
 
     name: str
@@ -320,7 +320,7 @@ def run_analysis(settings: AnalysisSettings) -> list[Path]:
         settings.model,
         device=settings.device,
         batch_size=settings.batch_size,
-        forge_api_key=settings.forge_api_key,
+        biohub_api_key=settings.biohub_api_key,
         modal_token_id=settings.modal_token_id,
         modal_token_secret=settings.modal_token_secret,
         cache=settings.cache,

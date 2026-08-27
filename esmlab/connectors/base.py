@@ -16,7 +16,7 @@ import numpy as np
 import numpy.typing as npt
 
 # Canonical model identifiers accepted by every backend factory; each backend
-# maps these to its own naming scheme (Forge names, HF repo ids).
+# maps these to its own naming scheme (Biohub Platform names, HF repo ids).
 CANONICAL_MODELS = ("esmc-300m", "esmc-600m")
 
 
@@ -38,7 +38,7 @@ def load_env() -> None:
     """Loads variables from a .env file into os.environ if present.
 
     Called once by the CLI entrypoint before :func:`resolve_params` runs so
-    that ``ParamSpec.env`` fallbacks (e.g. ``FORGE_API_KEY``) resolve.
+    that ``ParamSpec.env`` fallbacks (e.g. ``BIOHUB_API_KEY``) resolve.
     """
     from dotenv import load_dotenv
 
@@ -108,11 +108,11 @@ class SequenceLogits:
 class ModelConnector(Protocol):
     """Backend contract: mask each residue, read the logits, plus memory reporting.
 
-    Every backend (stub, local, forge, modal) implements
+    Every backend (stub, local, biohub, modal) implements
     :meth:`masked_sequence_logits`; the cache layer wraps it without changing
     the contract. :meth:`peak_memory_bytes` exposes the peak memory of the last
     call where the backend can observe it (CUDA on the local backend); it
-    returns ``None`` for backends with no observable memory (stub, forge, modal,
+    returns ``None`` for backends with no observable memory (stub, biohub, modal,
     or the local backend on CPU).
     """
 
@@ -123,7 +123,7 @@ class ModelConnector(Protocol):
     def peak_memory_bytes(self) -> int | None:
         """Peak memory of the last :meth:`masked_sequence_logits` call, or ``None``.
 
-        ``None`` means the backend cannot observe memory (stub, forge, modal,
+        ``None`` means the backend cannot observe memory (stub, biohub, modal,
         or the local backend on CPU). The local backend on CUDA returns
         ``torch.cuda.max_memory_allocated`` reset around each call.
         """

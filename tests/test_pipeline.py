@@ -27,7 +27,7 @@ def _settings(
         model="esmc-600m",
         device="",
         batch_size=0,
-        forge_api_key="",
+        biohub_api_key="",
         modal_token_id="",
         modal_token_secret="",
         sequences=SEQUENCES,

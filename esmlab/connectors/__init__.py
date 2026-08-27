@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from esmlab.connectors.base import CANONICAL_MODELS, ModelConnector, ParamSpec
-from esmlab.connectors.forge import PARAMS as _FORGE_PARAMS
+from esmlab.connectors.biohub import PARAMS as _BIOHUB_PARAMS
 from esmlab.connectors.local import PARAMS as _LOCAL_PARAMS
 from esmlab.connectors.modal_app import PARAMS as _MODAL_PARAMS
 from esmlab.connectors.stub import PARAMS as _STUB_PARAMS
@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 BACKEND_PARAMS: dict[str, tuple[ParamSpec, ...]] = {
     "stub": _STUB_PARAMS,
     "local": _LOCAL_PARAMS,
-    "forge": _FORGE_PARAMS,
+    "biohub": _BIOHUB_PARAMS,
     "modal": _MODAL_PARAMS,
 }
 BACKENDS = tuple(BACKEND_PARAMS.keys())
@@ -32,7 +32,7 @@ def get_connector(
     *,
     device: str,
     batch_size: int,
-    forge_api_key: str,
+    biohub_api_key: str,
     modal_token_id: str,
     modal_token_secret: str,
     cache: str,
@@ -63,10 +63,10 @@ def get_connector(
             from esmlab.connectors.local import LocalConnector
 
             inner = LocalConnector(model=model, device=device, batch_size=batch_size)
-        case "forge":
-            from esmlab.connectors.forge import ForgeConnector
+        case "biohub":
+            from esmlab.connectors.biohub import BiohubConnector
 
-            inner = ForgeConnector(model=model, token=forge_api_key)
+            inner = BiohubConnector(model=model, token=biohub_api_key)
         case "modal":
             from esmlab.connectors.modal_app import ModalConnector
 

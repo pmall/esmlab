@@ -14,17 +14,17 @@ official ESM protein language models from EvolutionaryScale/Biohub.
   embeddings; used for analysis, classification, comparison, mutation
   scoring, and fine-tuning.
 - **ESM3** — generative model reasoning jointly over sequence, structure, and
-  function; accessed through the Forge API.
+  function; accessed through the Biohub Platform API.
 - **ESMFold2** — structure prediction from sequence, including complexes with
   DNA, RNA, and small molecules.
 
 ## Compute
 
 - The local machine has no GPU; inference runs on local CPU, rented Modal
-  GPUs, or the Forge API.
+  GPUs, or the Biohub Platform API.
 - All model access goes through a single connector abstraction with
   swappable backends: `stub` (deterministic fake logits for tests), `local`
-  (ESMC checkpoints on CPU or CUDA), `forge` (hosted inference, API key
+  (ESMC checkpoints on CPU or CUDA), `biohub` (hosted inference, API key
   required), and `modal` (rented GPU). Backend and model size
   (ESMC-300M / ESMC-600M) are selected in one place; scripts call only the
   connector interface.
@@ -32,7 +32,7 @@ official ESM protein language models from EvolutionaryScale/Biohub.
   model calls so it runs and is tested on CPU; model-dependent paths are
   tested with the stub backend.
 - Backend credentials are loaded from `.env` via python-dotenv:
-  `FORGE_API_KEY`, `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET`; CLI flags override.
+  `BIOHUB_API_KEY`, `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET`; CLI flags override.
   The CLI validates parameters per chosen backend and cache.
 
 ## Caching

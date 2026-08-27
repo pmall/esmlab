@@ -105,7 +105,7 @@ def _analyze(args: argparse.Namespace) -> int:
     backend_cli: dict[str, str | int | Path | None] = {
         "device": args.device,
         "batch_size": args.batch_size,
-        "forge_api_key": args.forge_api_key,
+        "biohub_api_key": args.biohub_api_key,
         "modal_token_id": args.modal_token_id,
         "modal_token_secret": args.modal_token_secret,
     }
@@ -123,7 +123,7 @@ def _analyze(args: argparse.Namespace) -> int:
         model=args.model,
         device=cast(str, backend_resolved.get("device", "")),
         batch_size=cast(int, backend_resolved.get("batch_size", 0)),
-        forge_api_key=cast(str, backend_resolved.get("forge_api_key", "")),
+        biohub_api_key=cast(str, backend_resolved.get("biohub_api_key", "")),
         modal_token_id=cast(str, backend_resolved.get("modal_token_id", "")),
         modal_token_secret=cast(str, backend_resolved.get("modal_token_secret", "")),
         sequences=parse_sequences(args.sequences, args.fasta),
