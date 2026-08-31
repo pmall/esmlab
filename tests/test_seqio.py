@@ -14,20 +14,29 @@ def test_validate_sequence_normalizes_and_rejects() -> None:
         validate_sequence("   ")
 
 
-def test_parse_sequences_names_positional_inputs_and_rejects_duplicates(
+def test_parse_sequences_labels_positional_inputs_and_sanitizes_headers(
     tmp_path: Path,
 ) -> None:
-    """Positional inputs get seq_NN names, FASTA headers are sanitized, and duplicates/empty raise."""
+    """Positional inputs get seq_NN labels, FASTA headers are sanitized, empty raises."""
     fasta = tmp_path / "input.fa"
     fasta.write_text(">my protein|1\nACDE\nFGHIK\n\n>dup-name\nMMMMM\n")
-    fasta_duplicate = tmp_path / "other.fa"
-    fasta_duplicate.write_text(">dup-name\nLLLLL\n")
 
     named = parse_sequences(["acdefghikl"], [fasta])
     assert [record.name for record in named] == ["seq_01", "my_protein_1", "dup-name"]
     assert named[0].sequence == "ACDEFGHIKL"
 
-    with pytest.raises(ValueError, match="Duplicate sequence names"):
-        parse_sequences([], [fasta, fasta_duplicate])
     with pytest.raises(ValueError, match="No input sequences"):
         parse_sequences([], [])
+
+
+def test_parse_sequences_accepts_duplicate_labels(tmp_path: Path) -> None:
+    """Labels are display-only, so two records may share one without conflict."""
+    fasta = tmp_path / "input.fa"
+    fasta.write_text(">dup-name\nMMMMM\n")
+    other = tmp_path / "other.fa"
+    other.write_text(">dup-name\nLLLLL\n")
+
+    named = parse_sequences([], [fasta, other])
+
+    assert [record.name for record in named] == ["dup-name", "dup-name"]
+    assert [record.sequence for record in named] == ["MMMMM", "LLLLL"]

@@ -1,29 +1,29 @@
-"""Score protein sequences with a masked ESMC model and build mutation reports."""
+"""Compute masked ESMC logits for protein sequences and persist them."""
 
 import argparse
 import sys
 from pathlib import Path
 from typing import cast
 
-from esmlab.cache import ALL_CACHE_PARAMS, CACHE_PARAMS, CACHES
 from esmlab.connectors import ALL_BACKEND_PARAMS, BACKEND_PARAMS, BACKENDS
 from esmlab.connectors.base import (
     CANONICAL_SEQUENCE_MODELS,
     load_env,
     resolve_params,
 )
-from esmlab.pipeline import AnalysisSettings, run_analysis
+from esmlab.inference import InferenceSettings, run_inference
 from esmlab.seqio import parse_sequences
+
+DEFAULT_STORAGE = Path("data/logits")
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    """Builds the argparse parser, including backend/cache ParamSpec flags.
+    """Builds the argparse parser, including the per-backend ParamSpec flags.
 
-    Core flags (sequences, --fasta, --backend, --model, --threshold, --top,
-    --out, --cache) are declared directly; per-backend and per-cache flags
-    are generated from the co-located ``ParamSpec`` tuples so adding a
-    parameter only touches its own module. Defaults of ``None`` let
-    :func:`resolve_params` distinguish "not given" from "given".
+    Core flags are declared directly; per-backend flags are generated from the
+    co-located ``ParamSpec`` tuples so adding a parameter only touches its own
+    module. Defaults of ``None`` let :func:`resolve_params` distinguish "not
+    given" from "given".
     """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("sequences", nargs="*", help="Raw amino acid sequences")
@@ -47,25 +47,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="ESMC model size, supported by every backend (default: esmc-600m)",
     )
     parser.add_argument(
-        "--threshold",
-        type=float,
-        default=0.8,
-        help="A position counts as mutation-tolerant below this deleterious fraction",
-    )
-    parser.add_argument(
-        "--top", type=int, default=20, help="Number of substitutions to rank"
-    )
-    parser.add_argument(
-        "--out",
+        "--storage",
         type=Path,
-        default=Path("data/reports"),
-        help="Directory for per-sequence report folders (default: data/reports)",
-    )
-    parser.add_argument(
-        "--cache",
-        choices=CACHES,
-        default="null",
-        help="Logits cache store (default: null, no caching)",
+        default=DEFAULT_STORAGE,
+        dest="storage_root",
+        help=(
+            f"Directory holding computed logits (default: {DEFAULT_STORAGE}). "
+            "Use a separate one for stub runs; the root is the only scope."
+        ),
     )
     parser.add_argument(
         "--perf-report",
@@ -73,18 +62,9 @@ def _build_parser() -> argparse.ArgumentParser:
         default=Path("data/performance.csv"),
         help="Longitudinal perf CSV appended to per run (default: data/performance.csv)",
     )
-    # Backend and cache parameters are built from co-located ParamSpec tuples.
+    # Backend parameters are built from co-located ParamSpec tuples.
     # default=None lets resolve_params tell "not given" from "given".
     for spec in ALL_BACKEND_PARAMS:
-        parser.add_argument(
-            spec.flag,
-            dest=spec.dest,
-            default=None,
-            type=spec.type,
-            choices=spec.choices,
-            help=spec.help,
-        )
-    for spec in ALL_CACHE_PARAMS:
         parser.add_argument(
             spec.flag,
             dest=spec.dest,
@@ -96,14 +76,13 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _analyze(args: argparse.Namespace) -> int:
-    """Logic for one run: resolve params, build settings, run the analysis.
+def _compute(args: argparse.Namespace) -> int:
+    """Logic for one run: resolve backend params, build settings, compute logits.
 
-    Loads ``.env``, resolves backend and cache parameters via
-    :func:`resolve_params` (which validates that only relevant flags were
-    given), parses the input sequences into :class:`NamedSequence` objects,
-    assembles an :class:`AnalysisSettings`, calls :func:`run_analysis`, and
-    prints the list of written artifacts. Returns the process exit code.
+    Loads ``.env``, resolves backend parameters via :func:`resolve_params`
+    (which validates that only relevant flags were given), parses the input
+    sequences, assembles an :class:`InferenceSettings`, and calls
+    :func:`run_inference`. Returns the process exit code.
     """
     load_env()
     backend_cli: dict[str, str | int | Path | None] = {
@@ -114,16 +93,11 @@ def _analyze(args: argparse.Namespace) -> int:
         "modal_token_secret": args.modal_token_secret,
         "modal_gpu": args.modal_gpu,
     }
-    cache_cli: dict[str, str | int | Path | None] = {"cache_root": args.cache_root}
-
     backend_resolved = resolve_params(
         BACKEND_PARAMS[args.backend], backend_cli, label=f"backend {args.backend!r}"
     )
-    cache_resolved = resolve_params(
-        CACHE_PARAMS[args.cache], cache_cli, label=f"cache {args.cache!r}"
-    )
 
-    settings = AnalysisSettings(
+    settings = InferenceSettings(
         backend=args.backend,
         model=args.model,
         device=cast(str, backend_resolved.get("device", "")),
@@ -133,22 +107,21 @@ def _analyze(args: argparse.Namespace) -> int:
         modal_token_secret=cast(str, backend_resolved.get("modal_token_secret", "")),
         modal_gpu=cast(str, backend_resolved.get("modal_gpu", "")),
         sequences=parse_sequences(args.sequences, args.fasta),
-        out_dir=args.out,
-        threshold=args.threshold,
-        top_k=args.top,
-        cache=args.cache,
-        cache_root=cast(Path | None, cache_resolved.get("cache_root")),
+        storage_root=args.storage_root,
         perf_report=args.perf_report,
     )
-    artifacts = run_analysis(settings)
-    print(f"\nWrote {len(artifacts)} artifact(s):")
-    for artifact in artifacts:
-        print(f"  {artifact}")
+    stats = run_inference(settings)
+    print(
+        f"\n{stats.computed} computed, {stats.skipped} already stored "
+        f"({stats.n_sequences} sequence(s)); build reports with:\n"
+        f"  mutation_report.py --storage {settings.storage_root} "
+        f"--model {settings.model}"
+    )
     return 0
 
 
 def main() -> int:
-    """Entrypoint: parse CLI args and delegate to :func:`_analyze`.
+    """Entrypoint: parse CLI args and delegate to :func:`_compute`.
 
     Per the repo's script convention this only parses parameters and forwards
     to the logic function; ``ValueError`` from validation is surfaced through
@@ -157,7 +130,7 @@ def main() -> int:
     parser = _build_parser()
     args = parser.parse_args()
     try:
-        return _analyze(args)
+        return _compute(args)
     except ValueError as error:
         parser.error(str(error))
 

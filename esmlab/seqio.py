@@ -1,8 +1,7 @@
-"""Sequence parsing and the shared domain types for inference artifacts.
+"""Sequence parsing and the input record it produces.
 
-``NamedSequence``/``InferenceMeta`` are the lightweight records flowing between
-parsing, the cache, and the report; logits persistence itself lives in
-:mod:`esmlab.cache`.
+``NamedSequence`` is the unit of work flowing from the command line into
+:mod:`esmlab.inference`; logits persistence lives in :mod:`esmlab.storage`.
 """
 
 from dataclasses import dataclass
@@ -13,25 +12,15 @@ from esmlab.amino_acids import VALID_AMINO_ACIDS
 
 @dataclass(frozen=True)
 class NamedSequence:
-    """A protein sequence paired with its report name.
+    """A protein sequence paired with a display label.
 
-    The unit of work flowing through the pipeline: :func:`parse_sequences`
-    produces them, :func:`run_analysis` consumes them, and the name becomes
-    the per-sequence output subdirectory.
+    The label is the FASTA header the sequence arrived under, carried purely
+    so runs and reports are readable. It is never an identifier: the sequence
+    alone keys storage, so two records may share a label without conflict.
     """
 
     name: str
     sequence: str
-
-
-@dataclass(frozen=True)
-class InferenceMeta:
-    """Provenance stamped onto a console report (name, backend, model, time)."""
-
-    name: str
-    backend: str
-    model: str
-    created_utc: str
 
 
 def validate_sequence(sequence: str) -> str:
@@ -53,12 +42,11 @@ def validate_sequence(sequence: str) -> str:
 
 
 def sanitize_name(candidate: str, fallback: str) -> str:
-    """Turns an arbitrary FASTA header into a filesystem-safe report name.
+    """Turns an arbitrary FASTA header into a safe display label.
 
     Non-alphanumeric characters (except ``-_.``) become ``_`` and surrounding
     underscores are stripped; an empty result falls back to ``fallback``. Used
-    by :func:`_parse_fasta` so each record's name can serve as an output
-    directory.
+    by :func:`_parse_fasta` so a label is safe in filenames and CSV cells.
     """
     cleaned = "".join(
         character if character.isalnum() or character in "-_." else "_"
@@ -102,12 +90,13 @@ def _parse_fasta(path: Path) -> list[NamedSequence]:
 def parse_sequences(
     raw_sequences: list[str], fasta_paths: list[Path]
 ) -> list[NamedSequence]:
-    """Validates positional sequences and FASTA files into one named list.
+    """Validates positional sequences and FASTA files into one labeled list.
 
-    Positional sequences are named ``seq_01``, ``seq_02``, ...; FASTA records
+    Positional sequences are labeled ``seq_01``, ``seq_02``, ...; FASTA records
     keep their sanitized headers. Every record is validated by
-    :func:`validate_sequence`, duplicate names and empty input are rejected.
-    The returned list is what :func:`run_analysis` iterates over.
+    :func:`validate_sequence`. Duplicate labels are accepted because labels are
+    display-only — storage is keyed by the sequence. The returned list is what
+    :func:`~esmlab.inference.run_inference` iterates over.
     """
     sequences: list[NamedSequence] = []
     for index, raw in enumerate(raw_sequences, start=1):
@@ -117,10 +106,6 @@ def parse_sequences(
             sequences.append(
                 NamedSequence(record.name, validate_sequence(record.sequence))
             )
-    names = [named.name for named in sequences]
-    duplicates = sorted({name for name in names if names.count(name) > 1})
-    if duplicates:
-        raise ValueError(f"Duplicate sequence names: {', '.join(duplicates)}")
     if not sequences:
         raise ValueError("No input sequences given")
     return sequences

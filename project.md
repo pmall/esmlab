@@ -25,8 +25,10 @@ official ESM protein language models from EvolutionaryScale/Biohub.
 - All model access goes through a single connector abstraction with
   swappable backends: `stub` (deterministic fake logits for tests), `local`
   (ESMC checkpoints on CPU or CUDA), `biohub` (hosted inference, API key
-  required), and `modal` (rented GPU). Backend and model are selected in one
-  place; scripts call only the connector interface. Canonical model ids are
+  required), and `modal` (rented GPU). Connectors only compute: persisting
+  their results is the caller's job, via `esmlab/storage.py`. Backend and model
+  are selected in one place; scripts call only the connector interface.
+  Canonical model ids are
   grouped by task in `connectors/base.py`: `CANONICAL_SEQUENCE_MODELS`
   (`esmc-300m` / `esmc-600m` / `esmc-6b`, masked logits) and
   `CANONICAL_STRUCTURE_MODELS` (`esmfold2` / `esmfold2-fast`, structure
@@ -37,7 +39,7 @@ official ESM protein language models from EvolutionaryScale/Biohub.
   tested with the stub backend.
 - Backend config is loaded from `.env` via python-dotenv (see `.env.example`):
   `BIOHUB_API_KEY`, `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET`, `MODAL_GPU`; CLI
-  flags override. The CLI validates parameters per chosen backend and cache.
+  flags override. The CLI validates parameters per chosen backend.
 
 ## Accelerated GPU kernels
 
@@ -84,13 +86,45 @@ always-false marker; flash-attn does the same job.
 - `LocalConnector` raises via `_assert_fused_kernels_available()` when the
   device is `cuda` and either kernel is missing, instead of running slow.
 
-## Caching
+## Logits storage
 
-- `CachedConnector` wraps any backend with a `CacheStore` (`null` for
-  passthrough, `file` for a content-addressed logits cache under `data/`).
-  Cache key is `(model, backend, sequence)`.
-- One script, `mutation_analysis.py`, scores and reports in one pass;
-  `--cache` selects the store and the CLI validates params per backend/cache.
+Three independent layers: connectors compute, `esmlab/storage.py` persists,
+scripts orchestrate. There is no decorator and no opt-out — logits are
+expensive deterministic artifacts, so they are always kept.
+
+- **Key is the sequence alone**, and the model is the directory:
+  `<root>/<model>/<key>/{logits.npz, meta.json}` with
+  `key = blake2b(sequence)`. The backend is deliberately absent — logits for a
+  given `(model, sequence)` are the same artifact whichever backend produced
+  them, so a Modal run's results serve a later local run. One sequence has one
+  leaf name everywhere, so `ls <root>/*/<key>` shows which models scored it.
+- **The resource is the only scope.** Two stores on the same root are the same
+  store. A `stub` run therefore needs its own root
+  (`--storage data/logits-stub`), or its fake logits will be served to a real
+  run. No backend is special-cased in code.
+- **Writes are atomic** (staging directory + rename) and `has()` checks
+  `meta.json`, which is written last, so a torn write is recomputed rather than
+  skipped forever.
+- `LogitsStorage` is a Protocol; `FileLogitsStorage` is the filesystem
+  implementation. A database-backed store binds to a connection instead.
+
+## Two-stage CLI
+
+Compute and reporting are separate scripts, so re-rendering with a different
+`--threshold` or `--top` never re-runs the model. Future structure scripts sit
+alongside these.
+
+| script | module | does |
+| --- | --- | --- |
+| `scripts/mutation_logits.py` | `esmlab/inference.py` | computes missing logits and stores them; appends the perf CSV |
+| `scripts/mutation_report.py` | `esmlab/mutation_report.py` | reads a storage and renders every entry |
+
+- `esmlab/inference.py` is domain-agnostic on purpose: masked logits feed
+  embedding and classification work too, so it knows nothing about mutations.
+- Reports land in `<out>/<model>/<key>/` plus a `manifest.csv` mapping key to
+  label. **The FASTA header is a display label only** — never an identifier,
+  never a path component. Duplicate headers are accepted; two records with the
+  same sequence are the same analysis.
 
 ## Reference map
 

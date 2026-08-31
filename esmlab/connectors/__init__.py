@@ -1,8 +1,5 @@
 """Single entry point for building backend connectors."""
 
-from pathlib import Path
-from typing import TYPE_CHECKING
-
 from esmlab.connectors.base import (
     CANONICAL_SEQUENCE_MODELS,
     ModelConnector,
@@ -12,11 +9,6 @@ from esmlab.connectors.biohub import PARAMS as _BIOHUB_PARAMS
 from esmlab.connectors.local import PARAMS as _LOCAL_PARAMS
 from esmlab.connectors.modal_app import PARAMS as _MODAL_PARAMS
 from esmlab.connectors.stub import PARAMS as _STUB_PARAMS
-
-if TYPE_CHECKING:
-    # Imported lazily at runtime in get_connector to avoid a circular import
-    # (cache.py imports from connectors.base, which triggers this __init__).
-    from esmlab.cache import CachedConnector
 
 BACKEND_PARAMS: dict[str, tuple[ParamSpec, ...]] = {
     "stub": _STUB_PARAMS,
@@ -40,22 +32,13 @@ def get_connector(
     modal_token_id: str,
     modal_token_secret: str,
     modal_gpu: str,
-    cache: str,
-    cache_root: Path | None,
-) -> "CachedConnector":
-    """Builds the connector selected by ``backend``, always cache-wrapped.
+) -> ModelConnector:
+    """Builds the connector selected by ``backend``.
 
-    Each backend branch passes only its relevant parameters; the result is
-    wrapped in a :class:`CachedConnector` with the store selected by ``cache``.
-    No backend is special-cased — callers always receive a cache-decorated
-    connector, which is why the return type is the concrete
-    :class:`CachedConnector` rather than the bare :class:`ModelConnector`
-    protocol.
+    Each backend branch passes only its relevant parameters. Connectors only
+    compute: persisting their results is the caller's job, via
+    :mod:`esmlab.storage`.
     """
-    # Imported lazily to avoid a circular import: cache.py imports from
-    # connectors.base, which triggers this package's __init__.
-    from esmlab.cache import CACHES, CachedConnector, FileCacheStore, NullCacheStore
-
     if model not in CANONICAL_SEQUENCE_MODELS:
         raise ValueError(
             f"Unknown sequence model {model!r}; "
@@ -66,19 +49,19 @@ def get_connector(
         case "stub":
             from esmlab.connectors.stub import StubConnector
 
-            inner: ModelConnector = StubConnector(model=model)
+            return StubConnector(model=model)
         case "local":
             from esmlab.connectors.local import LocalConnector
 
-            inner = LocalConnector(model=model, device=device, batch_size=batch_size)
+            return LocalConnector(model=model, device=device, batch_size=batch_size)
         case "biohub":
             from esmlab.connectors.biohub import BiohubConnector
 
-            inner = BiohubConnector(model=model, token=biohub_api_key)
+            return BiohubConnector(model=model, token=biohub_api_key)
         case "modal":
             from esmlab.connectors.modal_app import ModalConnector
 
-            inner = ModalConnector(
+            return ModalConnector(
                 model=model,
                 token_id=modal_token_id,
                 token_secret=modal_token_secret,
@@ -86,15 +69,3 @@ def get_connector(
             )
         case _:
             raise ValueError(f"Unknown backend {backend!r}; expected one of {BACKENDS}")
-
-    match cache:
-        case "null":
-            store = NullCacheStore()
-        case "file":
-            # Guaranteed by resolve_params; narrows the type for pyright.
-            assert cache_root is not None
-            store = FileCacheStore(cache_root)
-        case _:
-            raise ValueError(f"Unknown cache {cache!r}; expected one of {CACHES}")
-
-    return CachedConnector(inner=inner, store=store, model=model, backend=backend)

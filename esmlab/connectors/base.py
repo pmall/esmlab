@@ -25,7 +25,7 @@ CANONICAL_STRUCTURE_MODELS = ("esmfold2", "esmfold2-fast")
 
 @dataclass(frozen=True)
 class ParamSpec:
-    """One CLI/env parameter, co-located with the backend or cache it belongs to."""
+    """One CLI/env parameter, co-located with the backend it belongs to."""
 
     flag: str
     dest: str
@@ -54,15 +54,15 @@ def resolve_params(
     *,
     label: str,
 ) -> dict[str, str | int | Path]:
-    """Validates and resolves parameters for one backend or cache.
+    """Validates and resolves parameters for one backend.
 
     Irrelevant CLI values (non-None but not in ``params``) raise. Each spec is
     resolved from the CLI value, then its env var, then its default; required
     specs with no value raise.
 
-    Called once per backend and once per cache from the CLI: the script passes
-    the matching ``PARAMS`` tuple (declared in each connector/cache module)
-    alongside the raw namespace values so backends stay self-contained.
+    Called once per run from the CLI: the script passes the matching ``PARAMS``
+    tuple (declared in each connector module) alongside the raw namespace
+    values so backends stay self-contained.
     """
     spec_dests = {spec.dest for spec in params}
     for dest, value in cli_values.items():
@@ -112,8 +112,9 @@ class ModelConnector(Protocol):
     """Backend contract: mask each residue, read the logits, plus memory reporting.
 
     Every backend (stub, local, biohub, modal) implements
-    :meth:`masked_sequence_logits`; the cache layer wraps it without changing
-    the contract. :meth:`peak_memory_bytes` exposes the peak memory of the last
+    :meth:`masked_sequence_logits`. Connectors only compute: persisting the
+    result is the caller's job, via :mod:`esmlab.storage`.
+    :meth:`peak_memory_bytes` exposes the peak memory of the last
     call where the backend can observe it (CUDA on the local backend); it
     returns ``None`` for backends with no observable memory (stub, biohub, modal,
     or the local backend on CPU).

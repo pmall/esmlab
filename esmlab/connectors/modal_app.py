@@ -35,6 +35,7 @@ def _hf_cache_volume_name(model: str) -> str:
     """Modal Volume name holding the HuggingFace cache for one model id."""
     return f"esmlab-hf-{model}"
 
+
 # Keep in lockstep with the `esm` pin in pyproject.toml / the references/esm
 # submodule commit.
 _ESM_GIT = (
@@ -145,9 +146,7 @@ def _build_app(gpu: str, model: str):
         _hf_cache_volume_name(model), create_if_missing=True
     )
 
-    @app.function(
-        gpu=gpu, scaledown_window=300, volumes={_HF_CACHE_DIR: hf_cache}
-    )
+    @app.function(gpu=gpu, scaledown_window=300, volumes={_HF_CACHE_DIR: hf_cache})
     def masked_logits(sequence: str) -> _RemoteLogits:
         """Remote entrypoint: scores ``sequence`` on the GPU container."""
         result = _connector_for(model).masked_sequence_logits(sequence)
@@ -193,7 +192,7 @@ class ModalConnector:
         Builds the app via :func:`_build_app`, invokes the remote
         ``masked_logits`` worker on a rented GPU, and converts the
         :class:`_RemoteLogits` payload back into a :class:`SequenceLogits`
-        for the analysis pipeline.
+        for the caller to persist.
         """
         app, masked_logits = _build_app(self._gpu, self._model)
         with app.run():

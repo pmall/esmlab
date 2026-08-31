@@ -40,7 +40,7 @@ def aa_log_probs(result: SequenceLogits) -> npt.NDArray[np.float64]:
 def entropy_per_position(result: SequenceLogits) -> npt.NDArray[np.float64]:
     """Shannon entropy in bits of the amino-acid distribution at each position.
 
-    Built on :func:`aa_log_probs`; consumed by :func:`run_analysis` for the
+    Built on :func:`aa_log_probs`; consumed by :func:`run_report` for the
     entropy plot and the most-constrained-positions report.
     """
     probs = np.exp(aa_log_probs(result))
@@ -55,7 +55,7 @@ def llr_matrix(result: SequenceLogits) -> npt.NDArray[np.float64]:
 
     Built on :func:`aa_log_probs`; consumed by
     :func:`deleterious_fraction_per_position`, :func:`rank_substitutions`,
-    and :func:`run_analysis` (heatmap + summary CSV).
+    and :func:`run_report` (heatmap + summary CSV).
     """
     log_probs = aa_log_probs(result)
     wildtype_columns = [VALID_AMINO_ACIDS.index(aa) for aa in result.sequence]
@@ -71,7 +71,7 @@ def deleterious_fraction_per_position(
 
     Takes the :func:`llr_matrix` output; feeds
     :func:`tolerant_positions` and the per-position scatter plot in
-    :func:`run_analysis`.
+    :func:`run_report`.
     """
     return (llr < 0).sum(axis=1) / (llr.shape[1] - 1)
 
@@ -82,7 +82,7 @@ def tolerant_positions(
     """Zero-based indices of positions whose deleterious fraction is below ``threshold``.
 
     Consumes :func:`deleterious_fraction_per_position`'s output; used by
-    :func:`run_analysis` to list candidate library-design sites.
+    :func:`run_report` to list candidate library-design sites.
     """
     return np.flatnonzero(fractions < threshold)
 
@@ -95,7 +95,7 @@ def rank_substitutions(
     Positions are 1-indexed; wildtype self-substitutions are excluded because
     their LLR is 0 by definition and would otherwise crowd the ranking.
 
-    Consumes :func:`llr_matrix`'s output; called by :func:`run_analysis` to
+    Consumes :func:`llr_matrix`'s output; called by :func:`run_report` to
     print the top tolerated substitutions.
     """
     scores: list[tuple[int, str, str, float]] = []
