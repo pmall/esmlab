@@ -25,6 +25,16 @@ _MODAL_APP_NAME = "esmlab-esmc"
 # A10G, L4, A100, H100. The prebuilt flash-attn wheel is also SM 8.0-9.0 only.
 _DEFAULT_MODAL_GPU = "H100"
 
+# HuggingFace cache path inside the container (Modal runs as root). A
+# per-model Modal Volume is mounted here so `from_pretrained` downloads each
+# checkpoint once ever, not once per cold container. See project.md.
+_HF_CACHE_DIR = "/root/.cache/huggingface"
+
+
+def _hf_cache_volume_name(model: str) -> str:
+    """Modal Volume name holding the HuggingFace cache for one model id."""
+    return f"esmlab-hf-{model}"
+
 # Keep in lockstep with the `esm` pin in pyproject.toml / the references/esm
 # submodule commit.
 _ESM_GIT = (
@@ -97,12 +107,13 @@ def _connector_for(model: str) -> LocalConnector:
     return _connectors[model]
 
 
-def _build_app(gpu: str):
+def _build_app(gpu: str, model: str):
     """Constructs the Modal ``App``/image and the remote ``masked_logits`` worker.
 
     The image installs ``esm`` plus its fused CUDA kernels and this repo's
     ``esmlab`` source so the worker can call :func:`_connector_for`. The worker
-    function runs on a ``gpu`` GPU with a 5-minute scaledown window to keep the
+    is pinned to one ``model`` (so its HuggingFace-cache Volume is per-model)
+    and runs on a ``gpu`` GPU with a 5-minute scaledown window to keep the
     checkpoint warm between calls. Returns ``(app, masked_logits)`` for the
     caller to run.
     """
@@ -119,16 +130,25 @@ def _build_app(gpu: str):
         modal.Image.from_registry(
             "nvidia/cuda:13.0.1-devel-ubuntu24.04", add_python="3.12"
         )
-        .env({"NVTE_FRAMEWORK": "pytorch"})
+        .env({"NVTE_FRAMEWORK": "pytorch", "HF_HOME": _HF_CACHE_DIR})
         .pip_install(_ESM_GIT, _FLASH_ATTN_WHEEL)
         .run_commands("python -m pip uninstall -y xformers")
         .pip_install("transformer-engine[pytorch]==2.15.0")
         .add_local_python_source("esmlab")
     )
-    app = modal.App(name=_MODAL_APP_NAME, image=image)
+    app = modal.App(name=f"{_MODAL_APP_NAME}-{model}", image=image)
 
-    @app.function(gpu=gpu, scaledown_window=300)
-    def masked_logits(sequence: str, model: str) -> _RemoteLogits:
+    # Persistent per-model HuggingFace cache: `from_pretrained` populates it on
+    # the first cold container, every later container (warm or cold) reads it.
+    # Modal background-commits Volume writes on container shutdown.
+    hf_cache = modal.Volume.from_name(
+        _hf_cache_volume_name(model), create_if_missing=True
+    )
+
+    @app.function(
+        gpu=gpu, scaledown_window=300, volumes={_HF_CACHE_DIR: hf_cache}
+    )
+    def masked_logits(sequence: str) -> _RemoteLogits:
         """Remote entrypoint: scores ``sequence`` on the GPU container."""
         result = _connector_for(model).masked_sequence_logits(sequence)
         return _RemoteLogits(
@@ -175,9 +195,9 @@ class ModalConnector:
         :class:`_RemoteLogits` payload back into a :class:`SequenceLogits`
         for the analysis pipeline.
         """
-        app, masked_logits = _build_app(self._gpu)
+        app, masked_logits = _build_app(self._gpu, self._model)
         with app.run():
-            payload: _RemoteLogits = masked_logits.remote(sequence, model=self._model)
+            payload: _RemoteLogits = masked_logits.remote(sequence)
         return SequenceLogits(
             sequence=payload.sequence,
             logits=np.asarray(payload.logits, dtype=np.float32),

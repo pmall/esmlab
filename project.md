@@ -72,7 +72,11 @@ always-false marker; flash-attn does the same job.
 - `modal_app.py` builds from a CUDA *devel* base, installs the same set, and
   uninstalls the xformers esm pulls in. Keep `_ESM_GIT` / `_FLASH_ATTN_WHEEL`
   in sync with `pyproject.toml`. GPU type is `--modal-gpu` / `$MODAL_GPU`
-  (default H100).
+  (default H100). Weights are *not* in the image: each `ModalConnector` is
+  pinned to one model and mounts a per-model Modal Volume
+  (`esmlab-hf-<model>`) at the container's HuggingFace cache, so
+  `from_pretrained` downloads a checkpoint once ever rather than on every cold
+  container.
 - `LocalConnector` raises via `_assert_fused_kernels_available()` when the
   device is `cuda` and either kernel is missing, instead of running slow.
 
