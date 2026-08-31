@@ -3,7 +3,11 @@
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from esmlab.connectors.base import CANONICAL_MODELS, ModelConnector, ParamSpec
+from esmlab.connectors.base import (
+    CANONICAL_SEQUENCE_MODELS,
+    ModelConnector,
+    ParamSpec,
+)
 from esmlab.connectors.biohub import PARAMS as _BIOHUB_PARAMS
 from esmlab.connectors.local import PARAMS as _LOCAL_PARAMS
 from esmlab.connectors.modal_app import PARAMS as _MODAL_PARAMS
@@ -52,8 +56,11 @@ def get_connector(
     # connectors.base, which triggers this package's __init__.
     from esmlab.cache import CACHES, CachedConnector, FileCacheStore, NullCacheStore
 
-    if model not in CANONICAL_MODELS:
-        raise ValueError(f"Unknown model {model!r}; expected one of {CANONICAL_MODELS}")
+    if model not in CANONICAL_SEQUENCE_MODELS:
+        raise ValueError(
+            f"Unknown sequence model {model!r}; "
+            f"expected one of {CANONICAL_SEQUENCE_MODELS}"
+        )
 
     match backend:
         case "stub":

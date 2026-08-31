@@ -8,6 +8,7 @@ from esmlab.connectors.base import ParamSpec, SequenceLogits
 LOCAL_MODEL_REPOS = {
     "esmc-300m": "biohub/ESMC-300M",
     "esmc-600m": "biohub/ESMC-600M",
+    "esmc-6b": "biohub/ESMC-6B",
 }
 
 PARAMS: tuple[ParamSpec, ...] = (
@@ -80,7 +81,7 @@ class LocalConnector:
     def __init__(self, model: str, device: str = "auto", batch_size: int = 32) -> None:
         """Loads the ESMC checkpoint once and keeps the tokenizer on device.
 
-        The model id (``esmc-300m``/``esmc-600m``) maps to a HuggingFace repo
+        The model id (``esmc-300m`` / ``esmc-600m`` / ``esmc-6b``) maps to a HF repo
         published by EvolutionaryScale. ``device`` is resolved via
         :func:`resolve_device`; ``batch_size`` bounds the forward-pass memory
         used by :meth:`masked_sequence_logits`. Heavy imports (torch, esm) are

@@ -25,9 +25,13 @@ official ESM protein language models from EvolutionaryScale/Biohub.
 - All model access goes through a single connector abstraction with
   swappable backends: `stub` (deterministic fake logits for tests), `local`
   (ESMC checkpoints on CPU or CUDA), `biohub` (hosted inference, API key
-  required), and `modal` (rented GPU). Backend and model size
-  (ESMC-300M / ESMC-600M) are selected in one place; scripts call only the
-  connector interface.
+  required), and `modal` (rented GPU). Backend and model are selected in one
+  place; scripts call only the connector interface. Canonical model ids are
+  grouped by task in `connectors/base.py`: `CANONICAL_SEQUENCE_MODELS`
+  (`esmc-300m` / `esmc-600m` / `esmc-6b`, masked logits) and
+  `CANONICAL_STRUCTURE_MODELS` (`esmfold2` / `esmfold2-fast`, structure
+  prediction — not yet wired to a connector). Each backend maps a canonical id
+  to its own scheme (HF repo, dated Biohub name).
 - Pure logic (entropy, LLR math, parsing, plotting, I/O) stays separate from
   model calls so it runs and is tested on CPU; model-dependent paths are
   tested with the stub backend.

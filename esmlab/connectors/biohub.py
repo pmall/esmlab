@@ -8,6 +8,7 @@ from esmlab.connectors.base import ParamSpec, SequenceLogits
 BIOHUB_MODEL_NAMES = {
     "esmc-300m": "esmc-300m-2024-12",
     "esmc-600m": "esmc-600m-2024-12",
+    "esmc-6b": "esmc-6b-2024-12",
 }
 
 PARAMS: tuple[ParamSpec, ...] = (

@@ -15,9 +15,12 @@ from typing import Protocol
 import numpy as np
 import numpy.typing as npt
 
-# Canonical model identifiers accepted by every backend factory; each backend
-# maps these to its own naming scheme (Biohub Platform names, HF repo ids).
-CANONICAL_MODELS = ("esmc-300m", "esmc-600m")
+# Canonical model identifiers, grouped by the task family they serve. Each
+# backend maps these to its own naming scheme (Biohub Platform names, HF repo
+# ids). Sequence models answer masked-logits queries (ESMC); structure models
+# predict 3D structure (ESMFold2, and its single-sequence "fast" variant).
+CANONICAL_SEQUENCE_MODELS = ("esmc-300m", "esmc-600m", "esmc-6b")
+CANONICAL_STRUCTURE_MODELS = ("esmfold2", "esmfold2-fast")
 
 
 @dataclass(frozen=True)

@@ -7,7 +7,11 @@ from typing import cast
 
 from esmlab.cache import ALL_CACHE_PARAMS, CACHE_PARAMS, CACHES
 from esmlab.connectors import ALL_BACKEND_PARAMS, BACKEND_PARAMS, BACKENDS
-from esmlab.connectors.base import CANONICAL_MODELS, load_env, resolve_params
+from esmlab.connectors.base import (
+    CANONICAL_SEQUENCE_MODELS,
+    load_env,
+    resolve_params,
+)
 from esmlab.pipeline import AnalysisSettings, run_analysis
 from esmlab.seqio import parse_sequences
 
@@ -38,9 +42,9 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--model",
-        choices=CANONICAL_MODELS,
+        choices=CANONICAL_SEQUENCE_MODELS,
         default="esmc-600m",
-        help="Model size, supported by every backend (default: esmc-600m)",
+        help="ESMC model size, supported by every backend (default: esmc-600m)",
     )
     parser.add_argument(
         "--threshold",
