@@ -30,6 +30,7 @@ def _settings(
         biohub_api_key="",
         modal_token_id="",
         modal_token_secret="",
+        modal_gpu="",
         sequences=SEQUENCES,
         out_dir=out_dir,
         threshold=threshold,

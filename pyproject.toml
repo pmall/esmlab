@@ -17,6 +17,17 @@ dependencies = [
     "tqdm>=4.70.0",
 ]
 
+[project.optional-dependencies]
+# Fused CUDA kernels for optimized GPU inference (see project.md, "Accelerated
+# GPU kernels"). NOT installed on the GPU-less dev machine: enable with
+# `uv sync --extra gpu` on a CUDA host, and it is baked into the Modal image.
+# transformer-engine-torch compiles against the host CUDA toolkit at install
+# time, so `--extra gpu` only works where nvcc is present.
+gpu = [
+    "flash-attn==2.7.4.post1",
+    "transformer-engine[pytorch]==2.15.0",
+]
+
 [dependency-groups]
 dev = [
     "modal>=0.73",
@@ -24,6 +35,20 @@ dev = [
     "pyright>=1.1.390",
     "ruff>=0.8",
 ]
+
+[tool.uv]
+# esm hard-depends on xformers (linux/x86_64), but its only published wheel
+# bundles a binary built against torch 2.10 that cannot load against esm's
+# pinned torch 2.11 - and a broken-but-importable xformers still shadows
+# flash-attn in esm's attention-kernel dispatch. Drop it entirely; flash-attn
+# (the `gpu` extra) covers the same fused-attention job. See project.md.
+override-dependencies = ["xformers; platform_system == 'no-such-system'"]
+
+[tool.uv.sources]
+# EvolutionaryScale's prebuilt flash-attn, built against esm's exact torch/CUDA
+# (py312 / pytorch 2.11 / CUDA 13) for SM 8.0-9.0 (A100 through H100). Building
+# flash-attn from its sdist otherwise takes 20+ min and needs the CUDA compiler.
+flash-attn = { url = "https://github.com/evolutionaryscale/wheels/releases/download/py312-pt211-cu13-sm80-90/flash_attn-2.7.4.post1-cp312-cp312-linux_x86_64.whl" }
 
 [tool.uv.build-backend]
 module-root = ""

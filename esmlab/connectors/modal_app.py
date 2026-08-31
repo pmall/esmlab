@@ -20,7 +20,24 @@ if TYPE_CHECKING:
     from esmlab.connectors.local import LocalConnector
 
 _MODAL_APP_NAME = "esmlab-esmc"
-_MODAL_GPU = "A10G"
+# Default Modal GPU. ESMC runs bf16 on CUDA (see project.md, "Accelerated GPU
+# kernels"), so any override must be an Ampere-or-newer card (SM >= 8.0):
+# A10G, L4, A100, H100. The prebuilt flash-attn wheel is also SM 8.0-9.0 only.
+_DEFAULT_MODAL_GPU = "H100"
+
+# Keep in lockstep with the `esm` pin in pyproject.toml / the references/esm
+# submodule commit.
+_ESM_GIT = (
+    "esm @ git+https://github.com/evolutionaryscale/esm.git"
+    "@43ccece2ad485f27db46afdb67da2a9601e8f106"
+)
+# EvolutionaryScale's prebuilt flash-attn (py312 / pytorch 2.11 / CUDA 13,
+# SM 8.0-9.0). Mirrors the `flash-attn` source in pyproject.toml.
+_FLASH_ATTN_WHEEL = (
+    "https://github.com/evolutionaryscale/wheels/releases/download/"
+    "py312-pt211-cu13-sm80-90/"
+    "flash_attn-2.7.4.post1-cp312-cp312-linux_x86_64.whl"
+)
 
 PARAMS: tuple[ParamSpec, ...] = (
     ParamSpec(
@@ -36,6 +53,16 @@ PARAMS: tuple[ParamSpec, ...] = (
         env="MODAL_TOKEN_SECRET",
         help="Modal token secret (defaults to $MODAL_TOKEN_SECRET from .env)",
         required=True,
+    ),
+    ParamSpec(
+        flag="--modal-gpu",
+        dest="modal_gpu",
+        env="MODAL_GPU",
+        help=(
+            f"Modal GPU type, Ampere or newer (default: $MODAL_GPU or "
+            f"{_DEFAULT_MODAL_GPU}); e.g. A10G, L4, A100, A100-80GB, H100"
+        ),
+        default=_DEFAULT_MODAL_GPU,
     ),
 )
 
@@ -70,27 +97,37 @@ def _connector_for(model: str) -> LocalConnector:
     return _connectors[model]
 
 
-def _build_app():
+def _build_app(gpu: str):
     """Constructs the Modal ``App``/image and the remote ``masked_logits`` worker.
 
-    The image installs the upstream ``esm`` package plus this repo's
-    ``esmlab`` source so the worker can call :func:`_connector_for`. The
-    worker function runs on an A10G GPU with a 5-minute scaledown window to
-    keep the checkpoint warm between calls. Returns ``(app, masked_logits)``
-    for the caller to run.
+    The image installs ``esm`` plus its fused CUDA kernels and this repo's
+    ``esmlab`` source so the worker can call :func:`_connector_for`. The worker
+    function runs on a ``gpu`` GPU with a 5-minute scaledown window to keep the
+    checkpoint warm between calls. Returns ``(app, masked_logits)`` for the
+    caller to run.
     """
     import modal
 
-    # The upstream package installs its own dependency set (torch, CUDA wheels);
-    # that is what we want inside the GPU container.
+    # ESMC only reaches its fused kernels on CUDA when the matching packages are
+    # importable (see project.md, "Accelerated GPU kernels"). esm's own base
+    # dependency set does not include them - and its published xformers wheel is
+    # ABI-broken against the pinned torch and shadows flash-attn in the kernel
+    # dispatch - so the image installs flash-attn + transformer-engine and drops
+    # xformers. The CUDA *devel* base gives nvcc for the transformer-engine
+    # build; that layer is cached, so the ~15 min compile happens once.
     image = (
-        modal.Image.debian_slim(python_version="3.12")
-        .pip_install("git+https://github.com/evolutionaryscale/esm.git")
+        modal.Image.from_registry(
+            "nvidia/cuda:13.0.1-devel-ubuntu24.04", add_python="3.12"
+        )
+        .env({"NVTE_FRAMEWORK": "pytorch"})
+        .pip_install(_ESM_GIT, _FLASH_ATTN_WHEEL)
+        .run_commands("python -m pip uninstall -y xformers")
+        .pip_install("transformer-engine[pytorch]==2.15.0")
         .add_local_python_source("esmlab")
     )
     app = modal.App(name=_MODAL_APP_NAME, image=image)
 
-    @app.function(gpu=_MODAL_GPU, scaledown_window=300)
+    @app.function(gpu=gpu, scaledown_window=300)
     def masked_logits(sequence: str, model: str) -> _RemoteLogits:
         """Remote entrypoint: scores ``sequence`` on the GPU container."""
         result = _connector_for(model).masked_sequence_logits(sequence)
@@ -106,14 +143,23 @@ def _build_app():
 class ModalConnector:
     """Calls the remote worker through the connector interface."""
 
-    def __init__(self, model: str, *, token_id: str, token_secret: str) -> None:
-        """Stores the model id and publishes Modal credentials to the environment.
+    def __init__(
+        self,
+        model: str,
+        *,
+        token_id: str,
+        token_secret: str,
+        gpu: str = _DEFAULT_MODAL_GPU,
+    ) -> None:
+        """Stores the model id and GPU, and publishes Modal credentials to the env.
 
         The credentials are written to ``os.environ`` because Modal's client
         reads them on connect, which happens inside the lazy ``import modal``
-        within :meth:`masked_sequence_logits`.
+        within :meth:`masked_sequence_logits`. ``gpu`` is the Modal GPU type
+        the remote worker runs on.
         """
         self._model = model
+        self._gpu = gpu or _DEFAULT_MODAL_GPU
         # Modal's client reads these on connect; set them before the lazy
         # `import modal` inside masked_sequence_logits runs.
         if token_id:
@@ -129,7 +175,7 @@ class ModalConnector:
         :class:`_RemoteLogits` payload back into a :class:`SequenceLogits`
         for the analysis pipeline.
         """
-        app, masked_logits = _build_app()
+        app, masked_logits = _build_app(self._gpu)
         with app.run():
             payload: _RemoteLogits = masked_logits.remote(sequence, model=self._model)
         return SequenceLogits(

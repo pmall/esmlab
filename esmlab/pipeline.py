@@ -73,6 +73,7 @@ class AnalysisSettings:
     biohub_api_key: str
     modal_token_id: str
     modal_token_secret: str
+    modal_gpu: str
     sequences: list[NamedSequence]
     out_dir: Path
     threshold: float
@@ -323,6 +324,7 @@ def run_analysis(settings: AnalysisSettings) -> list[Path]:
         biohub_api_key=settings.biohub_api_key,
         modal_token_id=settings.modal_token_id,
         modal_token_secret=settings.modal_token_secret,
+        modal_gpu=settings.modal_gpu,
         cache=settings.cache,
         cache_root=settings.cache_root,
     )

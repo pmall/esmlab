@@ -30,6 +30,31 @@ PARAMS: tuple[ParamSpec, ...] = (
 )
 
 
+def _assert_fused_kernels_available() -> None:
+    """Fails loudly when a CUDA run is missing ESMC's fused kernels.
+
+    On GPU the pure-PyTorch fallback is ~2-5x slower and drifts ~O(100) on the
+    bf16 residual stream, so an accidentally-unoptimized container should be an
+    error, not a silent slow run. Reads the import-time flags esm sets in
+    :mod:`esm.models.esmc.kernels` (populated by installing the ``gpu`` extra:
+    ``flash-attn`` and ``transformer-engine[pytorch]``; see ``project.md``).
+    """
+    from esm.models.esmc import kernels
+
+    missing = []
+    if not kernels.TE_INSTALLED:
+        missing.append("transformer-engine (fused LayerNorm)")
+    if not (kernels.XFORMERS_INSTALLED or kernels.FLASH_ATTN_INSTALLED):
+        missing.append("flash-attn (fused attention)")
+    if missing:
+        raise RuntimeError(
+            "CUDA inference requested but these fused kernels are not "
+            f"importable: {', '.join(missing)}. Install the GPU extra with "
+            "`uv sync --extra gpu` on a CUDA host (see project.md, "
+            "'Accelerated GPU kernels')."
+        )
+
+
 def resolve_device(device: str) -> str:
     """Maps the CLI device choice to a concrete torch device string.
 
@@ -67,6 +92,8 @@ class LocalConnector:
 
         self._torch = torch
         resolved_device = resolve_device(device)
+        if resolved_device == "cuda":
+            _assert_fused_kernels_available()
         # sdpa is the attention kernel available without flash-attn; bf16 only
         # pays off on accelerators, CPU keeps full precision.
         self._model = EsmcForMaskedLM.from_pretrained(

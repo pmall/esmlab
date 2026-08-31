@@ -35,6 +35,7 @@ def get_connector(
     biohub_api_key: str,
     modal_token_id: str,
     modal_token_secret: str,
+    modal_gpu: str,
     cache: str,
     cache_root: Path | None,
 ) -> "CachedConnector":
@@ -71,7 +72,10 @@ def get_connector(
             from esmlab.connectors.modal_app import ModalConnector
 
             inner = ModalConnector(
-                model=model, token_id=modal_token_id, token_secret=modal_token_secret
+                model=model,
+                token_id=modal_token_id,
+                token_secret=modal_token_secret,
+                gpu=modal_gpu,
             )
         case _:
             raise ValueError(f"Unknown backend {backend!r}; expected one of {BACKENDS}")

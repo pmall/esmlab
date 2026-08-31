@@ -108,6 +108,7 @@ def _analyze(args: argparse.Namespace) -> int:
         "biohub_api_key": args.biohub_api_key,
         "modal_token_id": args.modal_token_id,
         "modal_token_secret": args.modal_token_secret,
+        "modal_gpu": args.modal_gpu,
     }
     cache_cli: dict[str, str | int | Path | None] = {"cache_root": args.cache_root}
 
@@ -126,6 +127,7 @@ def _analyze(args: argparse.Namespace) -> int:
         biohub_api_key=cast(str, backend_resolved.get("biohub_api_key", "")),
         modal_token_id=cast(str, backend_resolved.get("modal_token_id", "")),
         modal_token_secret=cast(str, backend_resolved.get("modal_token_secret", "")),
+        modal_gpu=cast(str, backend_resolved.get("modal_gpu", "")),
         sequences=parse_sequences(args.sequences, args.fasta),
         out_dir=args.out,
         threshold=args.threshold,
