@@ -1,15 +1,7 @@
-# Instructions
+# Project
 
-Repository-specific details referenced by AGENTS.md.
-
-**Where documentation lives:** this file holds orientation and the project map
-only. Anything specific to one module is documented *in that module*, in its
-docstrings and comments — storage design in `esmlab/storage.py`, the FASTA
-header format in `esmlab/seqio.py`, fused GPU kernels in
-`esmlab/connectors/local.py`, the Modal image in `connectors/modal_app.py`, and
-each script's behavior in its own module docstring and `--help`. Keep it that
-way: when code moves, its explanation moves with it, and this file only ever
-says which file to open.
+What this project is, where things live, and what it depends on. AGENTS.md
+covers how to work in it.
 
 ## Overview
 
@@ -113,6 +105,15 @@ https://github.com/evolutionaryscale/esm holding the exact upstream code
 (models, tokenizers, SDK) and the official cookbook. The `esm` dependency is
 installed from upstream git and pinned to this submodule's commit; bump both
 together.
+
+**It is read-only documentation.** Consult it to learn model APIs and
+behaviour, and mirror its patterns when writing scripts and explaining
+concepts. Never modify it. Installing `esm` as a dependency is how the code is
+used; reading the submodule is how it is understood.
+
+**Nothing in this project may depend on it.** No script, test, config or tool
+may reference, scan, build from or write into `references/`: everything must
+keep working if that directory is deleted.
 
 - `cookbook/tutorials/` — tutorial notebooks (indexed below).
 - `cookbook/local/` — offline inference examples.
