@@ -3,6 +3,21 @@
 Not exercised yet in this repo (needs a Modal account). The worker mirrors
 `local.py` on a GPU container and keeps one loaded checkpoint per container.
 `modal` is imported lazily so it is not required for the other backends.
+
+Image and weights
+-----------------
+The image builds from a CUDA *devel* base, installs the same fused-kernel set
+as the ``gpu`` extra, and uninstalls the xformers that esm pulls in — see
+:mod:`esmlab.connectors.local` for why all three matter. ``_ESM_GIT`` and
+``_FLASH_ATTN_WHEEL`` below must stay in lockstep with ``pyproject.toml``.
+
+Weights are *not* baked into the image: each :class:`ModalConnector` is pinned
+to one model and mounts a per-model Modal Volume (``esmlab-hf-<model>``) at the
+container's HuggingFace cache, so ``from_pretrained`` downloads a checkpoint
+once ever rather than on every cold container.
+
+GPU type is ``--modal-gpu`` / ``$MODAL_GPU``, default H100. Any override must
+be Ampere or newer for the reasons in :mod:`esmlab.connectors.local`.
 """
 
 from __future__ import annotations
@@ -14,20 +29,21 @@ from typing import TYPE_CHECKING
 import numpy as np
 import numpy.typing as npt
 
-from esmlab.connectors.base import ParamSpec, SequenceLogits
+from esmlab.connectors.base import SequenceLogits
+from esmlab.params import ParamSpec
 
 if TYPE_CHECKING:
     from esmlab.connectors.local import LocalConnector
 
 _MODAL_APP_NAME = "esmlab-esmc"
-# Default Modal GPU. ESMC runs bf16 on CUDA (see project.md, "Accelerated GPU
+# Default Modal GPU. ESMC runs bf16 on CUDA (see local.py, "Fused CUDA
 # kernels"), so any override must be an Ampere-or-newer card (SM >= 8.0):
 # A10G, L4, A100, H100. The prebuilt flash-attn wheel is also SM 8.0-9.0 only.
 _DEFAULT_MODAL_GPU = "H100"
 
 # HuggingFace cache path inside the container (Modal runs as root). A
 # per-model Modal Volume is mounted here so `from_pretrained` downloads each
-# checkpoint once ever, not once per cold container. See project.md.
+# checkpoint once ever, not once per cold container.
 _HF_CACHE_DIR = "/root/.cache/huggingface"
 
 
@@ -121,7 +137,7 @@ def _build_app(gpu: str, model: str):
     import modal
 
     # ESMC only reaches its fused kernels on CUDA when the matching packages are
-    # importable (see project.md, "Accelerated GPU kernels"). esm's own base
+    # importable (see local.py, "Fused CUDA kernels"). esm's own base
     # dependency set does not include them - and its published xformers wheel is
     # ABI-broken against the pinned torch and shadows flash-attn in the kernel
     # dispatch - so the image installs flash-attn + transformer-engine and drops

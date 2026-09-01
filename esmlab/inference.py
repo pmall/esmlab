@@ -21,7 +21,7 @@ from tqdm import tqdm
 from esmlab.connectors import get_connector
 from esmlab.connectors.base import ModelConnector
 from esmlab.seqio import NamedSequence
-from esmlab.storage import FileLogitsStorage, LogitsStorage, logits_key
+from esmlab.storage import LogitsStorage, StorageSettings, logits_key, open_storage
 
 PERF_COLUMNS = (
     "started_utc",
@@ -36,7 +36,7 @@ PERF_COLUMNS = (
     "skipped",
     "process_peak_rss_bytes",
     "gpu_peak_bytes",
-    "storage_root",
+    "storage",
 )
 
 
@@ -45,8 +45,8 @@ class InferenceSettings:
     """Fully-resolved configuration for one :func:`run_inference` invocation.
 
     Bundles the selected backend/model with its resolved backend parameters,
-    the parsed input sequences, the storage root, and the longitudinal
-    perf-report CSV path. Built by the ``mutation_logits`` script.
+    the parsed input sequences, the resolved storage configuration, and the
+    longitudinal perf-report CSV path. Built by the ``mutation_logits`` script.
     """
 
     backend: str
@@ -58,7 +58,7 @@ class InferenceSettings:
     modal_token_secret: str
     modal_gpu: str
     sequences: list[NamedSequence]
-    storage_root: Path
+    storage: StorageSettings
     perf_report: Path
 
 
@@ -114,7 +114,7 @@ def run_inference(settings: InferenceSettings) -> InferenceStats:
     Entrypoint called by the ``mutation_logits`` script.
     """
     started_utc = datetime.now(UTC).isoformat()
-    storage = FileLogitsStorage(settings.storage_root)
+    storage = open_storage(settings.storage)
 
     init_start = perf_counter()
     connector = get_connector(
@@ -166,7 +166,12 @@ def _compute_missing(
             start = perf_counter()
             result = connector.masked_sequence_logits(named.sequence)
             duration = perf_counter() - start
-            storage.save(result, model=settings.model, label=named.name)
+            storage.save(
+                result,
+                model=settings.model,
+                label=named.name,
+                metadata=named.metadata,
+            )
             timings.append(
                 _SeqTiming(
                     key=logits_key(named.sequence),
@@ -255,6 +260,7 @@ def _print_perf_summary(
         f"storage: {agg.computed} computed / {agg.skipped} already stored\n"
         f"process RSS peak: {_format_bytes(process_peak_rss)}\n"
         f"GPU peak: {_format_bytes(agg.gpu_peak_bytes)}\n"
+        f"storage: {settings.storage.describe()}\n"
         f"perf report: {settings.perf_report}"
     )
 
@@ -286,7 +292,7 @@ def _append_perf_csv(
         str(agg.skipped),
         str(process_peak_rss),
         gpu_peak,
-        str(settings.storage_root),
+        settings.storage.describe(),
     ]
     is_new = not settings.perf_report.exists()
     settings.perf_report.parent.mkdir(parents=True, exist_ok=True)

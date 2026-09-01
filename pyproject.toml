@@ -13,13 +13,14 @@ dependencies = [
     "esm @ git+https://github.com/evolutionaryscale/esm.git@43ccece2ad485f27db46afdb67da2a9601e8f106",
     "matplotlib>=3.9",
     "numpy>=2.1",
+    "psycopg[binary]>=3.2",
     "python-dotenv>=1.0",
     "tqdm>=4.70.0",
 ]
 
 [project.optional-dependencies]
-# Fused CUDA kernels for optimized GPU inference (see project.md, "Accelerated
-# GPU kernels"). NOT installed on the GPU-less dev machine: enable with
+# Fused CUDA kernels for optimized GPU inference (see esmlab/connectors/local.py,
+# "Fused CUDA kernels"). NOT installed on the GPU-less dev machine: enable with
 # `uv sync --extra gpu` on a CUDA host, and it is baked into the Modal image.
 # transformer-engine-torch compiles against the host CUDA toolkit at install
 # time, so `--extra gpu` only works where nvcc is present.
@@ -41,7 +42,7 @@ dev = [
 # bundles a binary built against torch 2.10 that cannot load against esm's
 # pinned torch 2.11 - and a broken-but-importable xformers still shadows
 # flash-attn in esm's attention-kernel dispatch. Drop it entirely; flash-attn
-# (the `gpu` extra) covers the same fused-attention job. See project.md.
+# (the `gpu` extra) covers the same job. See esmlab/connectors/local.py.
 override-dependencies = ["xformers; platform_system == 'no-such-system'"]
 
 [tool.uv.sources]

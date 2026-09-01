@@ -11,7 +11,8 @@ from esmlab.mutation_report import (
     run_report,
 )
 from esmlab.seqio import NamedSequence
-from esmlab.storage import logits_key
+from esmlab.storage import StorageSettings, logits_key, open_storage
+from tests.fixtures import sqlite_settings
 
 SEQUENCE = "ACDEFGHIKLMNPQRSTVWY"
 OTHER_SEQUENCE = "MKTAYIAKQRQISFVK"
@@ -28,8 +29,9 @@ def _populate(
     sequences: list[NamedSequence],
     *,
     model: str = "esmc-600m",
-) -> Path:
+) -> StorageSettings:
     """Runs the stub compute stage so the report stage has entries to read."""
+    storage = sqlite_settings(tmp_path / "logits.sqlite3")
     run_inference(
         InferenceSettings(
             backend="stub",
@@ -41,11 +43,11 @@ def _populate(
             modal_token_secret="",
             modal_gpu="",
             sequences=sequences,
-            storage_root=tmp_path / "logits",
+            storage=storage,
             perf_report=tmp_path / "performance.csv",
         )
     )
-    return tmp_path / "logits"
+    return storage
 
 
 def _settings(
@@ -53,7 +55,7 @@ def _settings(
 ) -> ReportSettings:
     return ReportSettings(
         model=model,
-        storage_root=tmp_path / "logits",
+        storage=sqlite_settings(tmp_path / "logits.sqlite3"),
         out_dir=tmp_path / "reports",
         threshold=threshold,
         top_k=10,
@@ -105,9 +107,8 @@ def test_rerun_with_new_threshold_touches_no_storage(tmp_path: Path) -> None:
     This is the payoff of splitting compute from reporting - the old unified
     pipeline re-ran the model to change one presentation knob.
     """
-    storage_root = _populate(tmp_path, [NamedSequence("tiny", SEQUENCE)])
-    entry_dir = storage_root / "esmc-600m" / logits_key(SEQUENCE)
-    before = {path.name: path.stat().st_mtime_ns for path in entry_dir.iterdir()}
+    storage = open_storage(_populate(tmp_path, [NamedSequence("tiny", SEQUENCE)]))
+    before = storage.load(model="esmc-600m", sequence=SEQUENCE)
 
     summary = _summary_path(tmp_path)
     run_report(_settings(tmp_path, threshold=0.0))
@@ -117,8 +118,9 @@ def test_rerun_with_new_threshold_touches_no_storage(tmp_path: Path) -> None:
     loose = sum(row["tolerant"] == "True" for row in _summary_rows(summary))
 
     assert loose > strict
-    after = {path.name: path.stat().st_mtime_ns for path in entry_dir.iterdir()}
-    assert after == before
+    # A rewritten row would carry a fresh created_utc.
+    after = storage.load(model="esmc-600m", sequence=SEQUENCE)
+    assert after.created_utc == before.created_utc
 
 
 def test_two_records_sharing_a_label_both_get_reports(tmp_path: Path) -> None:

@@ -1,14 +1,11 @@
 """Single entry point for building backend connectors."""
 
-from esmlab.connectors.base import (
-    CANONICAL_SEQUENCE_MODELS,
-    ModelConnector,
-    ParamSpec,
-)
+from esmlab.connectors.base import CANONICAL_SEQUENCE_MODELS, ModelConnector
 from esmlab.connectors.biohub import PARAMS as _BIOHUB_PARAMS
 from esmlab.connectors.local import PARAMS as _LOCAL_PARAMS
 from esmlab.connectors.modal_app import PARAMS as _MODAL_PARAMS
 from esmlab.connectors.stub import PARAMS as _STUB_PARAMS
+from esmlab.params import ParamSpec
 
 BACKEND_PARAMS: dict[str, tuple[ParamSpec, ...]] = {
     "stub": _STUB_PARAMS,

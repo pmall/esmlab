@@ -6,7 +6,8 @@ import numpy as np
 import numpy.typing as npt
 
 from esmlab.amino_acids import VALID_AMINO_ACIDS
-from esmlab.connectors.base import ParamSpec, SequenceLogits
+from esmlab.connectors.base import SequenceLogits
+from esmlab.params import ParamSpec
 
 # Vocabulary of the stub backend: one column per canonical amino acid.
 STUB_VOCAB: dict[str, int] = {aa: index for index, aa in enumerate(VALID_AMINO_ACIDS)}
@@ -42,10 +43,10 @@ class StubConnector:
 
         For each position a Dirichlet draw over the 20 amino acids is boosted
         toward the wildtype residue, producing varied entropies and
-        deleterious fractions that exercise every branch of the analysis. The
-        output is seeded from :func:`_stable_seed` so results are reproducible
-        per (model, sequence) and feed directly into the pure-CPU math in
-        :mod:`esmlab.mutation_scoring`. Satisfies the
+        deleterious fractions that exercise every branch of a downstream
+        analysis. The output is seeded from :func:`_stable_seed` so results are
+        reproducible per (model, sequence), which is what lets it stand in for
+        a real model in any pure-CPU test. Satisfies the
         :class:`ModelConnector` protocol and is the default backend used by
         tests and the CLI when no model is available.
         """

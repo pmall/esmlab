@@ -1,8 +1,43 @@
-"""Local inference backend running the `esm` package on this machine."""
+"""Local inference backend running the `esm` package on this machine.
+
+Fused CUDA kernels
+------------------
+ESMC runs pure-PyTorch by default and switches to fused CUDA kernels at
+model-load time when the package is importable *and* the model is on CUDA. CPU
+always uses the pure path (full fp32); its "missing kernel" warnings there are
+expected and harmless. Two kernels matter, both CUDA-only:
+
+- **transformer-engine** — fused LayerNorm+Linear/MLP with an fp32 reduction.
+  Without it the bf16 LayerNorm drifts ~O(100) on the residual stream (it
+  washes out after the final norm). Auto-enabled on CUDA when importable.
+- **flash-attn** — FlashAttention-2 fused attention. Passing
+  ``attn_implementation="sdpa"`` below does *not* disable it: for our unmasked
+  fixed-length leave-one-out batches the dispatch picks flash-attn anyway.
+
+Both are the ``gpu`` extra in ``pyproject.toml``, off by default because
+transformer-engine compiles against the host CUDA toolkit at install time.
+Enable with ``uv sync --extra gpu`` on a CUDA host (needs ``nvcc``);
+:func:`_assert_fused_kernels_available` refuses a CUDA run missing either,
+rather than running slow and drifting.
+
+**GPU requirement:** this module loads the model in bfloat16 on any CUDA
+device. Native bf16 and the prebuilt flash-attn wheel (SM 8.0-9.0) both need
+**Ampere or newer** — A10G, L4, A100, H100. Turing (T4) and Volta (V100) have
+no bf16 tensor cores and are not supported.
+
+**xformers is removed.** esm hard-depends on it and its kernel dispatch tries
+it *before* flash-attn, but its only published wheel bundles a torch-2.10
+binary that cannot load against esm's pinned torch 2.11. The install still
+succeeds and ``import xformers.ops`` still works (hollow), so esm sets
+``XFORMERS_INSTALLED=True`` and shadows flash-attn. ``[tool.uv]
+override-dependencies`` drops it with an always-false marker; flash-attn does
+the same job.
+"""
 
 import numpy as np
 
-from esmlab.connectors.base import ParamSpec, SequenceLogits
+from esmlab.connectors.base import SequenceLogits
+from esmlab.params import ParamSpec
 
 # Canonical model ids -> HuggingFace repos published by EvolutionaryScale.
 LOCAL_MODEL_REPOS = {
@@ -38,7 +73,8 @@ def _assert_fused_kernels_available() -> None:
     bf16 residual stream, so an accidentally-unoptimized container should be an
     error, not a silent slow run. Reads the import-time flags esm sets in
     :mod:`esm.models.esmc.kernels` (populated by installing the ``gpu`` extra:
-    ``flash-attn`` and ``transformer-engine[pytorch]``; see ``project.md``).
+    ``flash-attn`` and ``transformer-engine[pytorch]``; see this module's
+    docstring).
     """
     from esm.models.esmc import kernels
 
@@ -51,8 +87,8 @@ def _assert_fused_kernels_available() -> None:
         raise RuntimeError(
             "CUDA inference requested but these fused kernels are not "
             f"importable: {', '.join(missing)}. Install the GPU extra with "
-            "`uv sync --extra gpu` on a CUDA host (see project.md, "
-            "'Accelerated GPU kernels')."
+            "`uv sync --extra gpu` on a CUDA host (see this module's "
+            "docstring, 'Fused CUDA kernels')."
         )
 
 
@@ -116,7 +152,9 @@ class LocalConnector:
         then runs forward passes in ``batch_size`` chunks and gathers the
         prediction row at each masked position. Returns a
         :class:`SequenceLogits` whose axis 0 maps one-to-one onto the
-        sequence residues, consumed by :mod:`esmlab.mutation_scoring`.
+        sequence residues. What consumes it is not this module's business:
+        masked logits feed mutation scoring, embedding and classification
+        alike.
         """
         torch = self._torch
         # Attribute access routes through BatchEncoding.__getattr__, avoiding

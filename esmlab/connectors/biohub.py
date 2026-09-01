@@ -2,7 +2,8 @@
 
 import numpy as np
 
-from esmlab.connectors.base import ParamSpec, SequenceLogits
+from esmlab.connectors.base import SequenceLogits
+from esmlab.params import ParamSpec
 
 # Canonical model ids -> Biohub Platform model names.
 BIOHUB_MODEL_NAMES = {
@@ -47,10 +48,10 @@ class BiohubConnector:
 
         Each residue is replaced in turn by the SDK ``"_"`` mask placeholder;
         the resulting masked strings are dispatched in parallel through the
-        SDK executor (mirroring the official mutation-scoring tutorial). Row
+        SDK executor (the dispatch pattern comes from the official
+        mutation-scoring tutorial, but nothing here is specific to it). Row
         ``i`` of variant ``i`` is the prediction at the masked residue (+1
-        skips the BOS token). Returns a :class:`SequenceLogits` for the
-        :mod:`esmlab.mutation_scoring` layer.
+        skips the BOS token). Returns a :class:`SequenceLogits`.
         """
         import torch
         from esm.sdk import parallel_executor

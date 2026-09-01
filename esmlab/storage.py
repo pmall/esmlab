@@ -1,62 +1,184 @@
-"""Persistence of computed masked-logits, keyed by (model, sequence).
+"""Persistence of computed masked-logits, keyed by ``(model, sequence)``.
 
 Storage is a layer of its own: connectors compute logits and never persist
 them, and this module persists logits and never computes them. Callers
 orchestrate the two — ``has`` before compute, ``save`` after — so neither side
-knows about the other.
+knows about the other. There is no decorator and no opt-out: logits are
+expensive deterministic artifacts, so they are always kept.
 
-Every implementation binds to one resource (a directory here, a database
-connection later), and that resource is the only scope: two stores pointed at
-the same resource are the same store. Logits for a given ``(model, sequence)``
-are the same artifact whichever backend produced them, so the backend is
-deliberately absent from the key. The corollary is that a ``stub`` run must use
-its own resource, or its fake logits will be served to a later real run.
+Storage is a database. There is no filesystem backend, because a tree of
+per-sequence directories is the wrong shape for tabular provenance and for
+asking which models have scored a sequence.
+
+Schema
+------
+One ``sequence_logits`` table, primary key ``(model, sequence_key)``.
+
+- **The key is a digest, not the sequence.** Sequences run to thousands of
+  residues, so the key column is ``sequence_key = blake2b(sequence)`` and the
+  sequence itself is a regular column that is never compared. The digest covers
+  the sequence alone, which keeps ``model`` a free-standing key column: one
+  sequence has one key under every model, so ``WHERE sequence_key = ...``
+  answers which models have scored it. The *backend* is deliberately absent —
+  logits for a given ``(model, sequence)`` are the same artifact whichever
+  backend produced them, so a Modal run's results serve a later local run.
+- **Logits are a raw C-order float32 blob** with ``n_positions`` / ``n_tokens``
+  in their own columns, so a read is a reshape rather than a deserialization
+  and :meth:`has` never transfers the blob at all. The vocab is JSON text.
+- **The record is split in two.** ``label`` is a plain text column holding the
+  display name, so ``WHERE label = 'stat1'`` works; ``metadata`` is a JSON
+  column holding the arbitrary object the caller supplied (:mod:`esmlab.seqio`
+  is where it comes from). Both engines can filter on it in SQL —
+  ``json_extract`` in SQLite, ``metadata::jsonb`` in PostgreSQL — instead of
+  decoding rows in Python.
+
+Scope, writes, backends
+-----------------------
+Every implementation binds to one resource, and that resource is the only
+scope: two stores pointed at the same database are the same store. A ``stub``
+run therefore needs its own database (``--sqlite-path
+data/logits-stub.sqlite3``), or its fake logits will be served to a later real
+run. No backend is special-cased in code.
+
+Writes are a single upsert, which both engines speak, so a recompute replaces
+the row and there is no state in which a later run sees a half-written entry
+and skips it forever. The schema is created on open: a fresh database needs no
+migration step.
+
+:class:`LogitsStorage` is the Protocol; :class:`SqliteLogitsStorage` and
+:class:`PostgresLogitsStorage` are the implementations, sharing everything but
+paramstyle, blob type and connection setup via :class:`_SqlLogitsStorage`.
 """
 
+import argparse
 import hashlib
 import json
-import os
-import shutil
-from collections.abc import Iterator
+import sqlite3
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol
+from typing import LiteralString, Protocol, cast
 
 import numpy as np
 import numpy.typing as npt
 
 from esmlab.connectors.base import SequenceLogits
+from esmlab.params import ParamSpec, ParamValue, resolve_params
 
-LOGITS_FILE = "logits.npz"
-META_FILE = "meta.json"
+type JsonValue = (
+    str | int | float | bool | None | list["JsonValue"] | dict[str, "JsonValue"]
+)
+
+# Whatever the caller wants to record about a sequence: a source, a list of
+# targets, nested structure. Storage never inspects it, so its shape is the
+# caller's to define and to change without a migration; the only constraint is
+# that the top level is an object, so a reader never type-checks a bare scalar.
+# A Mapping rather than a dict so a caller's narrower dict still fits, matching
+# how SequenceLogits.vocab is typed.
+type Metadata = Mapping[str, JsonValue]
+
+TABLE: LiteralString = "sequence_logits"
+
+DEFAULT_SQLITE_PATH = Path("data/mutations.sqlite3")
+
+SQLITE_PARAMS: tuple[ParamSpec, ...] = (
+    # A file path, not a credential: no env fallback. It stays a ParamSpec so
+    # resolve_params still rejects it on a postgres run.
+    ParamSpec(
+        flag="--sqlite-path",
+        dest="sqlite_path",
+        env="",
+        type=Path,
+        default=DEFAULT_SQLITE_PATH,
+        help=(
+            f"SQLite database file (default: {DEFAULT_SQLITE_PATH}). "
+            "Use a separate one for stub runs; the database is the only scope."
+        ),
+    ),
+)
+
+POSTGRES_PARAMS: tuple[ParamSpec, ...] = (
+    ParamSpec(
+        flag="--postgres-host",
+        dest="postgres_host",
+        env="POSTGRES_HOST",
+        default="localhost",
+        help="PostgreSQL host (defaults to $POSTGRES_HOST, then localhost)",
+    ),
+    ParamSpec(
+        flag="--postgres-port",
+        dest="postgres_port",
+        env="POSTGRES_PORT",
+        type=int,
+        default=5432,
+        help="PostgreSQL port (defaults to $POSTGRES_PORT, then 5432)",
+    ),
+    ParamSpec(
+        flag="--postgres-dbname",
+        dest="postgres_dbname",
+        env="POSTGRES_DB",
+        default="esmlab",
+        help="PostgreSQL database name (defaults to $POSTGRES_DB, then esmlab)",
+    ),
+    ParamSpec(
+        flag="--postgres-user",
+        dest="postgres_user",
+        env="POSTGRES_USER",
+        required=True,
+        help="PostgreSQL role (defaults to $POSTGRES_USER from .env)",
+    ),
+    ParamSpec(
+        flag="--postgres-password",
+        dest="postgres_password",
+        env="POSTGRES_PASSWORD",
+        required=True,
+        help="PostgreSQL password (defaults to $POSTGRES_PASSWORD from .env)",
+    ),
+)
+
+STORAGE_PARAMS: dict[str, tuple[ParamSpec, ...]] = {
+    "sqlite": SQLITE_PARAMS,
+    "postgres": POSTGRES_PARAMS,
+}
+STORAGES = tuple(STORAGE_PARAMS.keys())
+ALL_STORAGE_PARAMS: tuple[ParamSpec, ...] = tuple(
+    spec for specs in STORAGE_PARAMS.values() for spec in specs
+)
 
 
 @dataclass(frozen=True)
 class StoredLogits:
     """One persisted logits entry: the result plus its provenance.
 
-    ``label`` is a display string carried alongside the entry (the FASTA header
-    the sequence first arrived under). It is data, never identity: nothing
-    looks an entry up by it, and two entries may share one.
+    ``label`` is a display string carried alongside the entry (the sanitized
+    FASTA header the sequence first arrived under). It is data, never identity:
+    nothing looks an entry up by it, and two entries may share one.
+
+    ``metadata`` is the structured half of the same record, an arbitrary JSON
+    object supplied by the caller. It stays separate from ``label`` rather than
+    subsuming it: ``label`` is a plain column so ``WHERE label = ...`` still
+    works, while metadata carries whatever structure the analysis needs.
     """
 
     model: str
     label: str
+    metadata: Metadata
     created_utc: str
     logits: SequenceLogits
 
 
 def logits_key(sequence: str) -> str:
-    """Content-addressed key for one sequence.
+    """Content-addressed key for one sequence, the second half of the primary key.
 
-    Hashes the sequence alone: the model already selects the directory, so
-    folding it in would only make the same sequence look different under each
-    model. Keeping it out means one sequence has one key everywhere, and
-    ``<root>/*/<key>`` answers which models have scored it.
+    Sequences run to thousands of residues, so the row is keyed by a fixed-size
+    digest rather than the sequence itself; the sequence is stored in its own
+    column and never compared. Hashing the sequence alone keeps ``model`` a
+    free-standing key column, so one sequence has one key across every model
+    and a single ``WHERE sequence_key = ?`` answers which models have scored it.
 
     blake2b is fixed across processes, unlike the salted builtin ``hash()``, so
-    a recompute lands on the same entry instead of fragmenting the store.
+    a recompute lands on the same row instead of inserting a duplicate.
     """
     return hashlib.blake2b(sequence.encode(), digest_size=16).hexdigest()
 
@@ -64,121 +186,391 @@ def logits_key(sequence: str) -> str:
 class LogitsStorage(Protocol):
     """Persistence seam for computed masked-logits.
 
-    Implementations bind to one resource. :class:`FileLogitsStorage` is the
-    filesystem one; a database-backed store would satisfy the same contract.
+    Implementations bind to one resource. :class:`SqliteLogitsStorage` and
+    :class:`PostgresLogitsStorage` are the two; both satisfy this contract
+    identically, so callers never branch on which one they hold.
     """
 
     def has(self, *, model: str, sequence: str) -> bool:
-        """Whether a complete entry exists, without deserializing it."""
+        """Whether an entry exists, without transferring the logits blob."""
         ...
 
     def load(self, *, model: str, sequence: str) -> StoredLogits:
         """Returns the stored entry; raises :class:`KeyError` when absent."""
         ...
 
-    def save(self, result: SequenceLogits, *, model: str, label: str) -> None:
+    def save(
+        self,
+        result: SequenceLogits,
+        *,
+        model: str,
+        label: str,
+        metadata: Metadata,
+    ) -> None:
         """Persists ``result`` under ``(model, result.sequence)``."""
         ...
 
     def entries(self, *, model: str) -> Iterator[StoredLogits]:
-        """Yields every stored entry for ``model``, in unspecified order."""
+        """Yields every stored entry for ``model``, ordered by sequence key."""
         ...
 
 
-class FileLogitsStorage:
-    """Filesystem storage under one root: ``<root>/<model>/<key>/``.
+type Row = tuple[object, ...]
 
-    ``model`` comes from the closed ``CANONICAL_SEQUENCE_MODELS`` set, so it is
-    path-safe by construction and needs no sanitizing.
+
+class _Cursor(Protocol):
+    """The slice of DB-API 2.0 cursor both drivers expose identically."""
+
+    @property
+    def description(self) -> object:
+        """``None`` for statements that returned no result set."""
+        ...
+
+    def execute(self, statement: LiteralString, parameters: Row, /) -> object: ...
+
+    def fetchall(self) -> Sequence[Row]: ...
+
+    def close(self) -> None: ...
+
+
+class _Connection(Protocol):
+    """The slice of DB-API 2.0 connection both drivers expose identically."""
+
+    def cursor(self) -> _Cursor: ...
+
+    def commit(self) -> None: ...
+
+
+class _SqlLogitsStorage:
+    """Shared SQL implementation over an open DB-API connection.
+
+    Subclasses supply the connection, the placeholder style, and the blob
+    column type; everything else — schema, queries, row codec — is identical,
+    because both engines speak the same ``ON CONFLICT ... DO UPDATE`` upsert.
+    Statements are written with ``?`` and rewritten for the engine's paramstyle.
+
+    Every statement is typed :class:`LiteralString` end to end — the table
+    name, the blob type and the placeholder are all literals — so psycopg's
+    injection guard proves no caller value can reach the SQL text. Values
+    always travel as bound parameters.
     """
 
-    def __init__(self, root: Path) -> None:
-        self._root = root
+    _placeholder: LiteralString
+    _blob_type: LiteralString
 
-    def _model_dir(self, model: str) -> Path:
-        return self._root / model
+    def __init__(self, connection: _Connection) -> None:
+        self._connection = connection
+        self._create_schema()
 
-    def _entry_dir(self, *, model: str, sequence: str) -> Path:
-        return self._model_dir(model) / logits_key(sequence)
+    def _sql(self, statement: LiteralString) -> LiteralString:
+        """Rewrites ``?`` placeholders into the engine's paramstyle."""
+        return statement.replace("?", self._placeholder)
+
+    def _execute(self, statement: LiteralString, parameters: Row = ()) -> list[Row]:
+        """Runs one statement, commits, and returns every row it produced.
+
+        Reads are materialized rather than streamed so the cursor can be closed
+        here: entry iteration is a generator, and a half-consumed one must not
+        pin a cursor open on the connection.
+        """
+        cursor = self._connection.cursor()
+        try:
+            cursor.execute(self._sql(statement), parameters)
+            rows = list(cursor.fetchall()) if cursor.description else []
+        finally:
+            cursor.close()
+        self._connection.commit()
+        return rows
+
+    def _create_schema(self) -> None:
+        """Creates the table if absent, so a fresh database needs no migration step."""
+        self._execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {TABLE} (
+                model TEXT NOT NULL,
+                sequence_key TEXT NOT NULL,
+                sequence TEXT NOT NULL,
+                label TEXT NOT NULL,
+                metadata TEXT NOT NULL,
+                created_utc TEXT NOT NULL,
+                n_positions INTEGER NOT NULL,
+                n_tokens INTEGER NOT NULL,
+                vocab TEXT NOT NULL,
+                logits {self._blob_type} NOT NULL,
+                PRIMARY KEY (model, sequence_key)
+            )
+            """
+        )
 
     def has(self, *, model: str, sequence: str) -> bool:
-        """Whether a complete entry exists, without reading the logits array.
-
-        Presence is defined by the sidecar rather than the directory because
-        :meth:`save` writes the sidecar last: a directory holding only the npz
-        is a torn write and must not count as a hit.
-        """
-        entry_dir = self._entry_dir(model=model, sequence=sequence)
-        return (entry_dir / META_FILE).is_file()
+        """Whether the row exists, selecting a constant so the blob stays in the database."""
+        rows = self._execute(
+            f"SELECT 1 FROM {TABLE} WHERE model = ? AND sequence_key = ?",
+            (model, logits_key(sequence)),
+        )
+        return bool(rows)
 
     def load(self, *, model: str, sequence: str) -> StoredLogits:
         """Rehydrates the stored entry, raising :class:`KeyError` when absent."""
-        entry_dir = self._entry_dir(model=model, sequence=sequence)
-        if not (entry_dir / META_FILE).is_file():
+        rows = self._execute(
+            f"{_SELECT_COLUMNS} FROM {TABLE} WHERE model = ? AND sequence_key = ?",
+            (model, logits_key(sequence)),
+        )
+        if not rows:
             raise KeyError(f"No stored logits for {model!r} and this sequence")
-        return _read_entry(entry_dir)
+        return _row_to_stored(rows[0])
 
-    def save(self, result: SequenceLogits, *, model: str, label: str) -> None:
-        """Writes the entry atomically, overwriting any prior one.
+    def save(
+        self,
+        result: SequenceLogits,
+        *,
+        model: str,
+        label: str,
+        metadata: Metadata,
+    ) -> None:
+        """Upserts the entry in one statement, overwriting any prior one.
 
-        Persistence is unconditional, so a crash midway through a write would
-        otherwise leave a half-entry that every later run skips forever. The
-        payload is built in a sibling temporary directory and renamed into
-        place, which is atomic within a filesystem.
+        A single statement is the whole atomicity story: a recompute replaces
+        the row or does nothing, and there is no state in which a later run can
+        see a half-written entry and skip it forever.
         """
-        entry_dir = self._entry_dir(model=model, sequence=result.sequence)
-        staging = entry_dir.with_name(f".tmp-{entry_dir.name}-{os.getpid()}")
-        shutil.rmtree(staging, ignore_errors=True)
-        staging.mkdir(parents=True)
-        try:
-            _write_entry(staging, result, model=model, label=label)
-            # rename onto an existing directory fails, so clear the old entry.
-            shutil.rmtree(entry_dir, ignore_errors=True)
-            staging.rename(entry_dir)
-        finally:
-            shutil.rmtree(staging, ignore_errors=True)
+        logits = np.ascontiguousarray(result.logits, dtype=np.float32)
+        self._execute(
+            f"""
+            INSERT INTO {TABLE} (
+                model, sequence_key, sequence, label, metadata, created_utc,
+                n_positions, n_tokens, vocab, logits
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (model, sequence_key) DO UPDATE SET
+                sequence = EXCLUDED.sequence,
+                label = EXCLUDED.label,
+                metadata = EXCLUDED.metadata,
+                created_utc = EXCLUDED.created_utc,
+                n_positions = EXCLUDED.n_positions,
+                n_tokens = EXCLUDED.n_tokens,
+                vocab = EXCLUDED.vocab,
+                logits = EXCLUDED.logits
+            """,
+            (
+                model,
+                logits_key(result.sequence),
+                result.sequence,
+                label,
+                json.dumps(dict(metadata)),
+                datetime.now(UTC).isoformat(),
+                logits.shape[0],
+                logits.shape[1],
+                json.dumps(dict(result.vocab)),
+                logits.tobytes(),
+            ),
+        )
 
     def entries(self, *, model: str) -> Iterator[StoredLogits]:
-        """Yields every complete entry for ``model``; missing model dir yields nothing."""
-        model_dir = self._model_dir(model)
-        if not model_dir.is_dir():
-            return
-        for entry_dir in sorted(model_dir.iterdir()):
-            if (entry_dir / META_FILE).is_file():
-                yield _read_entry(entry_dir)
+        """Yields every entry for ``model``; a model never written to yields nothing."""
+        rows = self._execute(
+            f"{_SELECT_COLUMNS} FROM {TABLE} WHERE model = ? ORDER BY sequence_key",
+            (model,),
+        )
+        for row in rows:
+            yield _row_to_stored(row)
 
 
-def _write_entry(
-    entry_dir: Path, result: SequenceLogits, *, model: str, label: str
-) -> None:
-    """Writes the npz then the sidecar, in that order.
+class SqliteLogitsStorage(_SqlLogitsStorage):
+    """SQLite storage bound to one database file.
 
-    The sidecar is last because :meth:`FileLogitsStorage.has` treats it as the
-    completeness marker. The vocab lives in it so reads never import a
-    tokenizer.
+    The default resource for every run: a single file, no server, and the
+    logits blobs stay out of the working set until a report asks for them.
     """
-    np.savez_compressed(entry_dir / LOGITS_FILE, logits=result.logits)
-    payload = {
-        "model": model,
-        "label": label,
-        "created_utc": datetime.now(UTC).isoformat(),
-        "sequence": result.sequence,
-        "vocab": dict(result.vocab),
-    }
-    (entry_dir / META_FILE).write_text(json.dumps(payload))
+
+    _placeholder = "?"
+    _blob_type = "BLOB"
+
+    def __init__(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        connection = sqlite3.connect(path)
+        # WAL lets a report read the store while a compute run writes to it.
+        connection.execute("PRAGMA journal_mode=WAL")
+        super().__init__(connection)
 
 
-def _read_entry(entry_dir: Path) -> StoredLogits:
-    """Rehydrates a :class:`StoredLogits` from an entry directory."""
-    payload = json.loads((entry_dir / META_FILE).read_text())
-    logits: npt.NDArray[np.float32] = np.load(entry_dir / LOGITS_FILE)["logits"]
+class PostgresLogitsStorage(_SqlLogitsStorage):
+    """PostgreSQL storage bound to one database.
+
+    For a store shared by several machines — a Modal run and a local report
+    against the same rows. ``psycopg`` is imported here rather than at module
+    scope so a SQLite-only run never pays for it.
+    """
+
+    _placeholder = "%s"
+    _blob_type = "BYTEA"
+
+    def __init__(
+        self, *, host: str, port: int, dbname: str, user: str, password: str
+    ) -> None:
+        import psycopg
+
+        super().__init__(
+            psycopg.connect(
+                host=host, port=port, dbname=dbname, user=user, password=password
+            )
+        )
+
+
+_SELECT_COLUMNS: LiteralString = """SELECT
+    model, sequence, label, metadata, created_utc,
+    n_positions, n_tokens, vocab, logits"""
+
+
+def _row_to_stored(row: Row) -> StoredLogits:
+    """Decodes one selected row into a :class:`StoredLogits`.
+
+    The blob is raw C-order float32 whose shape lives in its own columns, so
+    the decode is a reshape rather than a deserialization. It is copied because
+    ``frombuffer`` yields a read-only view over memory the driver owns.
+    """
+    (
+        model,
+        sequence,
+        label,
+        metadata,
+        created_utc,
+        n_positions,
+        n_tokens,
+        vocab,
+        blob,
+    ) = row
+    logits: npt.NDArray[np.float32] = (
+        np.frombuffer(blob, dtype=np.float32)  # type: ignore[arg-type]
+        .reshape(int(n_positions), int(n_tokens))  # type: ignore[arg-type]
+        .copy()
+    )
     return StoredLogits(
-        model=payload["model"],
-        label=payload["label"],
-        created_utc=payload["created_utc"],
+        model=str(model),
+        label=str(label),
+        metadata=json.loads(str(metadata)),
+        created_utc=str(created_utc),
         logits=SequenceLogits(
-            sequence=payload["sequence"],
-            logits=logits,
-            vocab=payload["vocab"],
+            sequence=str(sequence), logits=logits, vocab=json.loads(str(vocab))
         ),
     )
+
+
+@dataclass(frozen=True)
+class StorageSettings:
+    """Fully-resolved storage configuration, built from the CLI by both scripts.
+
+    Carries every backend's parameters at once — only those of ``storage`` are
+    populated — so the two entrypoints pass one value around instead of a
+    widening argument list.
+    """
+
+    storage: str
+    sqlite_path: Path
+    postgres_host: str
+    postgres_port: int
+    postgres_dbname: str
+    postgres_user: str
+    postgres_password: str
+
+    def describe(self) -> str:
+        """Human-readable identity of the resource, safe to print and to log.
+
+        The password is deliberately absent: this string goes to stdout and
+        into the longitudinal perf CSV.
+        """
+        if self.storage == "sqlite":
+            return f"sqlite:{self.sqlite_path}"
+        return (
+            f"postgres:{self.postgres_user}@{self.postgres_host}:"
+            f"{self.postgres_port}/{self.postgres_dbname}"
+        )
+
+    def flags(self) -> str:
+        """The flags a sibling command needs to reach this same resource."""
+        if self.storage == "sqlite":
+            return f"--storage sqlite --sqlite-path {self.sqlite_path}"
+        return (
+            f"--storage postgres --postgres-host {self.postgres_host} "
+            f"--postgres-port {self.postgres_port} "
+            f"--postgres-dbname {self.postgres_dbname}"
+        )
+
+
+def add_storage_arguments(parser: argparse.ArgumentParser) -> None:
+    """Declares ``--storage`` and every backend's flags on a script's parser.
+
+    Shared by both entrypoints so the two stages always accept the same storage
+    vocabulary and a command line copied between them keeps working. Defaults
+    of ``None`` let :func:`resolve_params` distinguish "not given" from "given".
+
+    ``--storage`` selects sqlite (the default, at :data:`DEFAULT_SQLITE_PATH`)
+    or postgres. SQLite takes only ``--sqlite-path``; postgres takes its
+    connection parameters, each with a ``POSTGRES_*`` env fallback listed in
+    ``.env.example``.
+    """
+    parser.add_argument(
+        "--storage",
+        choices=STORAGES,
+        default="sqlite",
+        help="Storage backend holding computed logits (default: sqlite)",
+    )
+    for spec in ALL_STORAGE_PARAMS:
+        parser.add_argument(
+            spec.flag,
+            dest=spec.dest,
+            default=None,
+            type=spec.type,
+            choices=spec.choices,
+            help=spec.help,
+        )
+
+
+def storage_settings(args: argparse.Namespace) -> StorageSettings:
+    """Resolves the parsed namespace into a :class:`StorageSettings`.
+
+    Delegates to :func:`resolve_params`, which applies the env fallbacks and
+    rejects a flag belonging to the storage that was *not* selected — so a
+    stale ``--sqlite-path`` on a postgres run is an error rather than being
+    silently ignored. Raises :class:`ValueError`, which both scripts surface as
+    an argparse error.
+    """
+    cli_values: dict[str, ParamValue | None] = {
+        "sqlite_path": args.sqlite_path,
+        "postgres_host": args.postgres_host,
+        "postgres_port": args.postgres_port,
+        "postgres_dbname": args.postgres_dbname,
+        "postgres_user": args.postgres_user,
+        "postgres_password": args.postgres_password,
+    }
+    resolved = resolve_params(
+        STORAGE_PARAMS[args.storage], cli_values, label=f"storage {args.storage!r}"
+    )
+    return StorageSettings(
+        storage=args.storage,
+        sqlite_path=cast(Path, resolved.get("sqlite_path", DEFAULT_SQLITE_PATH)),
+        postgres_host=cast(str, resolved.get("postgres_host", "")),
+        postgres_port=cast(int, resolved.get("postgres_port", 0)),
+        postgres_dbname=cast(str, resolved.get("postgres_dbname", "")),
+        postgres_user=cast(str, resolved.get("postgres_user", "")),
+        postgres_password=cast(str, resolved.get("postgres_password", "")),
+    )
+
+
+def open_storage(settings: StorageSettings) -> LogitsStorage:
+    """Opens the storage selected by ``settings``, creating its schema if needed."""
+    match settings.storage:
+        case "sqlite":
+            return SqliteLogitsStorage(settings.sqlite_path)
+        case "postgres":
+            return PostgresLogitsStorage(
+                host=settings.postgres_host,
+                port=settings.postgres_port,
+                dbname=settings.postgres_dbname,
+                user=settings.postgres_user,
+                password=settings.postgres_password,
+            )
+        case _:
+            raise ValueError(
+                f"Unknown storage {settings.storage!r}; expected one of {STORAGES}"
+            )

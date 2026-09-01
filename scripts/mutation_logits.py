@@ -1,4 +1,28 @@
-"""Compute masked ESMC logits for protein sequences and persist them."""
+"""Compute masked ESMC logits for protein sequences and persist them.
+
+The compute phase: this runs the model, and consuming scripts render what it
+stored. It computes masked logits and persists them, which is the entry point
+for any logits-based topic; the module it drives, :mod:`esmlab.inference`, is
+topic-agnostic.
+
+Sequences come from positional arguments and/or ``--fasta`` files (repeatable);
+see :mod:`esmlab.seqio` for the header format that attaches JSON metadata to a
+record. A sequence already in storage is skipped rather than recomputed, so
+re-running over a grown FASTA only computes the new records, and a sequence
+listed twice is one unit of work.
+
+Backend flags (``--backend`` and its credentials) and storage flags
+(``--storage`` and its connection parameters) are generated from the
+``ParamSpec`` tuples co-located with each backend and with
+:mod:`esmlab.storage`, so a flag belonging to something you did not select is
+an error rather than being silently ignored. Most fall back to an environment
+variable read from ``.env``; see ``.env.example``, and ``--help`` for the
+current list. The run ends by printing the ``mutation_report.py`` command line
+that reopens the store it just wrote.
+
+Each run also appends one aggregate row to ``--perf-report``, which is
+longitudinal across runs rather than per-run output.
+"""
 
 import argparse
 import sys
@@ -6,26 +30,27 @@ from pathlib import Path
 from typing import cast
 
 from esmlab.connectors import ALL_BACKEND_PARAMS, BACKEND_PARAMS, BACKENDS
-from esmlab.connectors.base import (
-    CANONICAL_SEQUENCE_MODELS,
-    load_env,
-    resolve_params,
-)
+from esmlab.connectors.base import CANONICAL_SEQUENCE_MODELS
 from esmlab.inference import InferenceSettings, run_inference
+from esmlab.params import load_env, resolve_params
 from esmlab.seqio import parse_sequences
+from esmlab.storage import add_storage_arguments, storage_settings
 
-DEFAULT_STORAGE = Path("data/logits")
+SUMMARY = __doc__.partition("\n\n")[0] if __doc__ else ""
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    """Builds the argparse parser, including the per-backend ParamSpec flags.
+    """Builds the argparse parser, including the per-backend and storage flags.
 
     Core flags are declared directly; per-backend flags are generated from the
     co-located ``ParamSpec`` tuples so adding a parameter only touches its own
-    module. Defaults of ``None`` let :func:`resolve_params` distinguish "not
-    given" from "given".
+    module, and the storage flags come from :func:`add_storage_arguments` so
+    both stages accept the same vocabulary. Defaults of ``None`` let
+    :func:`resolve_params` distinguish "not given" from "given".
     """
-    parser = argparse.ArgumentParser(description=__doc__)
+    # argparse takes the summary line only: the rest of the module docstring
+    # is for someone reading the file, and would swamp --help.
+    parser = argparse.ArgumentParser(description=SUMMARY)
     parser.add_argument("sequences", nargs="*", help="Raw amino acid sequences")
     parser.add_argument(
         "--fasta",
@@ -46,16 +71,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default="esmc-600m",
         help="ESMC model size, supported by every backend (default: esmc-600m)",
     )
-    parser.add_argument(
-        "--storage",
-        type=Path,
-        default=DEFAULT_STORAGE,
-        dest="storage_root",
-        help=(
-            f"Directory holding computed logits (default: {DEFAULT_STORAGE}). "
-            "Use a separate one for stub runs; the root is the only scope."
-        ),
-    )
+    add_storage_arguments(parser)
     parser.add_argument(
         "--perf-report",
         type=Path,
@@ -77,12 +93,13 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _compute(args: argparse.Namespace) -> int:
-    """Logic for one run: resolve backend params, build settings, compute logits.
+    """Logic for one run: resolve backend and storage params, then compute logits.
 
-    Loads ``.env``, resolves backend parameters via :func:`resolve_params`
-    (which validates that only relevant flags were given), parses the input
-    sequences, assembles an :class:`InferenceSettings`, and calls
-    :func:`run_inference`. Returns the process exit code.
+    Loads ``.env``, resolves backend and storage parameters via
+    :func:`resolve_params` (which validates that only relevant flags were
+    given), parses the input sequences, assembles an
+    :class:`InferenceSettings`, and calls :func:`run_inference`. Returns the
+    process exit code.
     """
     load_env()
     backend_cli: dict[str, str | int | Path | None] = {
@@ -107,14 +124,14 @@ def _compute(args: argparse.Namespace) -> int:
         modal_token_secret=cast(str, backend_resolved.get("modal_token_secret", "")),
         modal_gpu=cast(str, backend_resolved.get("modal_gpu", "")),
         sequences=parse_sequences(args.sequences, args.fasta),
-        storage_root=args.storage_root,
+        storage=storage_settings(args),
         perf_report=args.perf_report,
     )
     stats = run_inference(settings)
     print(
         f"\n{stats.computed} computed, {stats.skipped} already stored "
         f"({stats.n_sequences} sequence(s)); build reports with:\n"
-        f"  mutation_report.py --storage {settings.storage_root} "
+        f"  mutation_report.py {settings.storage.flags()} "
         f"--model {settings.model}"
     )
     return 0

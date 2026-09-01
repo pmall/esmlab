@@ -1,4 +1,21 @@
-"""Build mutation reports from logits already persisted by mutation_logits.py."""
+"""Build mutation reports from logits already persisted by mutation_logits.py.
+
+A consuming phase over what ``mutation_logits.py`` stored: it reads a storage
+and never constructs a connector, so it needs no credentials, no GPU and no
+model. Re-running with a different ``--threshold`` or ``--top`` is pure CPU
+work over arrays that are already stored; another analysis of the same logits
+is a sibling script rather than another model run.
+
+It iterates the storage rather than an input file — the store is the source of
+truth for what has been computed — and renders every entry held for ``--model``.
+Artifacts land in ``<out>/<model>/<key>/``, keyed by the sequence's storage
+digest rather than by its label, plus a ``manifest.csv`` mapping each key back
+to a label for humans. The model is in the path because the key is the
+sequence's alone, so two models would otherwise overwrite each other.
+
+Takes the same storage flags as ``mutation_logits.py``, which prints the exact
+command line that reaches the store it wrote.
+"""
 
 import argparse
 import sys
@@ -6,30 +23,29 @@ from pathlib import Path
 
 from esmlab.connectors.base import CANONICAL_SEQUENCE_MODELS
 from esmlab.mutation_report import ReportSettings, run_report
+from esmlab.params import load_env
+from esmlab.storage import add_storage_arguments, storage_settings
 
-DEFAULT_STORAGE = Path("data/logits")
+SUMMARY = __doc__.partition("\n\n")[0] if __doc__ else ""
 
 
 def _build_parser() -> argparse.ArgumentParser:
     """Builds the argparse parser.
 
-    No backend flags and no credentials: this stage reads stored arrays and
-    never constructs a connector.
+    No backend flags and no model credentials: this stage reads stored arrays
+    and never constructs a connector. The storage flags are the same ones
+    ``mutation_logits`` declares, so a run's printed command line is copyable.
     """
-    parser = argparse.ArgumentParser(description=__doc__)
+    # argparse takes the summary line only: the rest of the module docstring
+    # is for someone reading the file, and would swamp --help.
+    parser = argparse.ArgumentParser(description=SUMMARY)
     parser.add_argument(
         "--model",
         choices=CANONICAL_SEQUENCE_MODELS,
         default="esmc-600m",
         help="Report on entries stored for this model (default: esmc-600m)",
     )
-    parser.add_argument(
-        "--storage",
-        type=Path,
-        default=DEFAULT_STORAGE,
-        dest="storage_root",
-        help=f"Directory holding computed logits (default: {DEFAULT_STORAGE})",
-    )
+    add_storage_arguments(parser)
     parser.add_argument(
         "--out",
         type=Path,
@@ -53,14 +69,16 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _report(args: argparse.Namespace) -> int:
-    """Logic for one run: build settings and render every stored entry.
+    """Logic for one run: resolve storage params and render every stored entry.
 
-    Assembles a :class:`ReportSettings`, calls :func:`run_report`, and prints
-    the written artifacts. Returns the process exit code.
+    Loads ``.env`` so the storage env fallbacks resolve, assembles a
+    :class:`ReportSettings`, calls :func:`run_report`, and prints the written
+    artifacts. Returns the process exit code.
     """
+    load_env()
     settings = ReportSettings(
         model=args.model,
-        storage_root=args.storage_root,
+        storage=storage_settings(args),
         out_dir=args.out,
         threshold=args.threshold,
         top_k=args.top_k,

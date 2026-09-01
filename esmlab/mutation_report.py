@@ -3,7 +3,7 @@
 Reads a :class:`~esmlab.storage.LogitsStorage` and never constructs a
 connector, so this stage needs no credentials, no GPU and no model. Re-running
 it with a different threshold or top-k is pure CPU work over arrays that are
-already on disk.
+already stored.
 
 Reports are located by the sequence's storage key, not by its label: two input
 records sharing a FASTA header are the same analysis if they are the same
@@ -27,7 +27,7 @@ from esmlab.mutation_scoring import (
     tolerant_positions,
 )
 from esmlab.plotting import plot_deleterious_fraction, plot_entropy, plot_llr_heatmap
-from esmlab.storage import FileLogitsStorage, StoredLogits, logits_key
+from esmlab.storage import StorageSettings, StoredLogits, logits_key, open_storage
 
 SUMMARY_COLUMNS = (
     "position",
@@ -53,7 +53,7 @@ class ReportSettings:
     """
 
     model: str
-    storage_root: Path
+    storage: StorageSettings
     out_dir: Path
     threshold: float
     top_k: int
@@ -68,7 +68,7 @@ def run_report(settings: ReportSettings) -> list[Path]:
     storage key is the sequence's alone, so two models would otherwise
     overwrite each other. Returns the list of written artifact paths.
     """
-    storage = FileLogitsStorage(settings.storage_root)
+    storage = open_storage(settings.storage)
     model_dir = settings.out_dir / settings.model
     model_dir.mkdir(parents=True, exist_ok=True)
 

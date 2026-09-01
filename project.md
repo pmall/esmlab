@@ -2,6 +2,15 @@
 
 Repository-specific details referenced by AGENTS.md.
 
+**Where documentation lives:** this file holds orientation and the project map
+only. Anything specific to one module is documented *in that module*, in its
+docstrings and comments — storage design in `esmlab/storage.py`, the FASTA
+header format in `esmlab/seqio.py`, fused GPU kernels in
+`esmlab/connectors/local.py`, the Modal image in `connectors/modal_app.py`, and
+each script's behavior in its own module docstring and `--help`. Keep it that
+way: when code moves, its explanation moves with it, and this file only ever
+says which file to open.
+
 ## Overview
 
 Python project managed with **uv** (Python >= 3.12, < 3.13, matching the
@@ -18,113 +27,84 @@ official ESM protein language models from EvolutionaryScale/Biohub.
 - **ESMFold2** — structure prediction from sequence, including complexes with
   DNA, RNA, and small molecules.
 
+## Project structure
+
+| path | holds |
+| --- | --- |
+| `scripts/` | executable entrypoints only; each defines `main()`, which parses and validates parameters and delegates |
+| `esmlab/connectors/` | model backends behind one Protocol in `base.py`, one module per backend, each co-locating its own CLI params |
+| `esmlab/storage.py` | logits persistence: schema, SQLite/PostgreSQL backends, and the storage CLI params both scripts share |
+| `esmlab/params.py` | `ParamSpec` / `resolve_params` / `load_env`, shared by connectors and storage |
+| `esmlab/seqio.py` | sequence input: FASTA parsing, validation, the `NamedSequence` record |
+| `esmlab/inference.py` | compute stage: orchestrates a connector and a storage, appends the perf CSV |
+| `esmlab/amino_acids.py` | the canonical amino-acid alphabet |
+| `esmlab/mutation_*.py`, `esmlab/plotting.py` | the mutation-analysis topic: scoring math, report assembly, its plots |
+| `tests/` | pytest suite; model-dependent paths run against the `stub` backend |
+| `data/` | generated outputs and databases, gitignored |
+| `references/` | read-only upstream ESM submodule (see Reference map) |
+
+Three layers stay independent throughout: **connectors compute**, **storage
+persists**, **scripts orchestrate**. No connector writes, and no storage
+computes. Everything above is topic-agnostic except the `mutation_*` modules;
+Script topology describes how a topic is assembled from these layers.
+
 ## Compute
 
 - The local machine has no GPU; inference runs on local CPU, rented Modal
   GPUs, or the Biohub Platform API.
-- All model access goes through a single connector abstraction with
-  swappable backends: `stub` (deterministic fake logits for tests), `local`
-  (ESMC checkpoints on CPU or CUDA), `biohub` (hosted inference, API key
-  required), and `modal` (rented GPU). Connectors only compute: persisting
-  their results is the caller's job, via `esmlab/storage.py`. Backend and model
-  are selected in one place; scripts call only the connector interface.
-  Canonical model ids are
-  grouped by task in `connectors/base.py`: `CANONICAL_SEQUENCE_MODELS`
-  (`esmc-300m` / `esmc-600m` / `esmc-6b`, masked logits) and
-  `CANONICAL_STRUCTURE_MODELS` (`esmfold2` / `esmfold2-fast`, structure
-  prediction — not yet wired to a connector). Each backend maps a canonical id
-  to its own scheme (HF repo, dated Biohub name).
+- All model access goes through a single connector abstraction with swappable
+  backends: `stub` (deterministic fake logits for tests), `local` (ESMC
+  checkpoints on CPU or CUDA), `biohub` (hosted inference, API key required),
+  and `modal` (rented GPU). Backend and model are selected in one place;
+  scripts call only the connector interface. Canonical model ids are grouped by
+  task in `connectors/base.py`: `CANONICAL_SEQUENCE_MODELS` (`esmc-300m` /
+  `esmc-600m` / `esmc-6b`, masked logits) and `CANONICAL_STRUCTURE_MODELS`
+  (`esmfold2` / `esmfold2-fast`, structure prediction — not yet wired to a
+  connector). Each backend maps a canonical id to its own scheme (HF repo,
+  dated Biohub name).
 - Pure logic (entropy, LLR math, parsing, plotting, I/O) stays separate from
   model calls so it runs and is tested on CPU; model-dependent paths are
   tested with the stub backend.
-- Backend config is loaded from `.env` via python-dotenv (see `.env.example`):
-  `BIOHUB_API_KEY`, `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET`, `MODAL_GPU`; CLI
-  flags override. The CLI validates parameters per chosen backend.
+- Backend and storage configuration is loaded from `.env` via python-dotenv;
+  `.env.example` lists every variable. CLI flags override, and the CLI
+  validates parameters per chosen backend and per chosen storage through the
+  shared `ParamSpec` machinery.
+- Running ESMC on a GPU requires fused CUDA kernels and an Ampere-or-newer
+  card; the constraints, the `gpu` extra and the xformers removal are all
+  documented in `esmlab/connectors/local.py`.
 
-## Accelerated GPU kernels
+## Script topology
 
-ESMC runs pure-PyTorch by default and switches to fused CUDA kernels at
-model-load time when the package is importable *and* the model is on CUDA. CPU
-always uses the pure path (full fp32); its "missing kernel" warnings are
-expected and harmless. Two kernels matter, both CUDA-only:
+Each topic is built in two phases:
 
-**GPU requirement:** `local.py` loads the model in bfloat16 on any CUDA device.
-Native bf16 and the prebuilt flash-attn wheel (SM 8.0-9.0) both require
-**Ampere or newer** — A10G, L4, A100, H100. Turing (T4) / Volta (V100) have no
-bf16 tensor cores and are not supported; the Modal backend defaults to H100 and
-`--modal-gpu` only accepts cards in this range.
+1. **A compute phase** calls a model and persists what it produced. Expensive,
+   needs credentials or a GPU, and skips anything already stored.
+2. **Consuming phases** read that storage and never construct a connector.
+   Cheap to re-run, so presentation knobs, derived metrics and additional kinds
+   of report cost no model time.
 
-- **transformer-engine** — fused LayerNorm+Linear/MLP with an fp32 reduction.
-  Without it the bf16 LayerNorm drifts ~O(100) on the residual stream (washes
-  out after the final norm). Auto-enabled on CUDA when importable.
-- **flash-attn** — FlashAttention-2 fused attention. `local.py` passing
-  `attn_implementation="sdpa"` does *not* disable it: for our unmasked
-  fixed-length leave-one-out batches the dispatch picks flash-attn anyway.
+A topic grows by adding consumers over arrays that are already stored.
+Everything below the script layer is topic-agnostic:
 
-**xformers is removed.** esm hard-depends on it and its dispatch tries it
-*before* flash-attn, but its only wheel bundles a torch-2.10 binary that won't
-load against esm's torch 2.11. The install still succeeds and
-`import xformers.ops` still works (hollow), so esm sets `XFORMERS_INSTALLED=True`
-and **shadows flash-attn**. `[tool.uv] override-dependencies` drops it with an
-always-false marker; flash-attn does the same job.
+| module | does |
+| --- | --- |
+| `esmlab/inference.py` | compute phase for any topic built on masked logits: orchestrates a connector and a storage |
+| `esmlab/connectors/` | model access |
+| `esmlab/storage.py` | persistence |
+| `esmlab/params.py`, `esmlab/seqio.py` | CLI parameters, sequence input |
 
-**Wiring:**
-
-- `[project.optional-dependencies] gpu` = `flash-attn` +
-  `transformer-engine[pytorch]`. Off by default; `uv sync --extra gpu` on a
-  CUDA host (needs `nvcc`, transformer-engine compiles at install).
-- `[tool.uv.sources]` pins `flash-attn` to EvolutionaryScale's prebuilt wheel
-  (`py312-pt211-cu13-sm80-90`, A100–H100).
-- `modal_app.py` builds from a CUDA *devel* base, installs the same set, and
-  uninstalls the xformers esm pulls in. Keep `_ESM_GIT` / `_FLASH_ATTN_WHEEL`
-  in sync with `pyproject.toml`. GPU type is `--modal-gpu` / `$MODAL_GPU`
-  (default H100). Weights are *not* in the image: each `ModalConnector` is
-  pinned to one model and mounts a per-model Modal Volume
-  (`esmlab-hf-<model>`) at the container's HuggingFace cache, so
-  `from_pretrained` downloads a checkpoint once ever rather than on every cold
-  container.
-- `LocalConnector` raises via `_assert_fused_kernels_available()` when the
-  device is `cuda` and either kernel is missing, instead of running slow.
-
-## Logits storage
-
-Three independent layers: connectors compute, `esmlab/storage.py` persists,
-scripts orchestrate. There is no decorator and no opt-out — logits are
-expensive deterministic artifacts, so they are always kept.
-
-- **Key is the sequence alone**, and the model is the directory:
-  `<root>/<model>/<key>/{logits.npz, meta.json}` with
-  `key = blake2b(sequence)`. The backend is deliberately absent — logits for a
-  given `(model, sequence)` are the same artifact whichever backend produced
-  them, so a Modal run's results serve a later local run. One sequence has one
-  leaf name everywhere, so `ls <root>/*/<key>` shows which models scored it.
-- **The resource is the only scope.** Two stores on the same root are the same
-  store. A `stub` run therefore needs its own root
-  (`--storage data/logits-stub`), or its fake logits will be served to a real
-  run. No backend is special-cased in code.
-- **Writes are atomic** (staging directory + rename) and `has()` checks
-  `meta.json`, which is written last, so a torn write is recomputed rather than
-  skipped forever.
-- `LogitsStorage` is a Protocol; `FileLogitsStorage` is the filesystem
-  implementation. A database-backed store binds to a connection instead.
-
-## Two-stage CLI
-
-Compute and reporting are separate scripts, so re-rendering with a different
-`--threshold` or `--top` never re-runs the model. Future structure scripts sit
-alongside these.
+### Mutation analysis
 
 | script | module | does |
 | --- | --- | --- |
 | `scripts/mutation_logits.py` | `esmlab/inference.py` | computes missing logits and stores them; appends the perf CSV |
-| `scripts/mutation_report.py` | `esmlab/mutation_report.py` | reads a storage and renders every entry |
+| `scripts/mutation_report.py` | `esmlab/mutation_report.py` (+ `mutation_scoring.py`, `plotting.py`) | reads a storage and renders every entry |
 
-- `esmlab/inference.py` is domain-agnostic on purpose: masked logits feed
-  embedding and classification work too, so it knows nothing about mutations.
-- Reports land in `<out>/<model>/<key>/` plus a `manifest.csv` mapping key to
-  label. **The FASTA header is a display label only** — never an identifier,
-  never a path component. Duplicate headers are accepted; two records with the
-  same sequence are the same analysis.
+Both accept the same storage flags, and `mutation_logits` prints the
+`mutation_report` command line that reopens the store it just wrote.
+`mutation_logits.py` drives the topic-agnostic compute phase: it computes
+masked logits and stores them, which is the entry point for any logits-based
+topic.
 
 ## Reference map
 

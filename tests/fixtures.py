@@ -1,4 +1,6 @@
-"""Builds small handcrafted SequenceLogits fixtures for pure-math tests."""
+"""Shared test fixtures: handcrafted SequenceLogits and a SQLite storage config."""
+
+from pathlib import Path
 
 import numpy as np
 import numpy.typing as npt
@@ -6,6 +8,7 @@ import numpy.typing as npt
 from esmlab.amino_acids import VALID_AMINO_ACIDS
 from esmlab.connectors.base import SequenceLogits
 from esmlab.connectors.stub import STUB_VOCAB
+from esmlab.storage import StorageSettings
 
 VOCAB_SIZE = len(VALID_AMINO_ACIDS)
 
@@ -52,3 +55,21 @@ def uniform_rows(sequence: str, alphabet_size: int) -> list[list[float]]:
             row[column] = 0.0
         rows.append(row)
     return rows
+
+
+def sqlite_settings(path: Path) -> StorageSettings:
+    """A :class:`StorageSettings` selecting a SQLite file, with the rest blank.
+
+    Tests build storage through the same settings object the CLI produces, so
+    they exercise the real :func:`open_storage` path; only the SQLite fields
+    matter when ``storage`` is ``"sqlite"``.
+    """
+    return StorageSettings(
+        storage="sqlite",
+        sqlite_path=path,
+        postgres_host="",
+        postgres_port=0,
+        postgres_dbname="",
+        postgres_user="",
+        postgres_password="",
+    )

@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from esmlab.connectors.base import ParamSpec, resolve_params
+from esmlab.params import ParamSpec, resolve_params
 
 _DEVICE = ParamSpec(
     flag="--device",
