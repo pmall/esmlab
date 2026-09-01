@@ -9,7 +9,6 @@ from esmlab.mutation_scoring import (
     entropy_per_position,
     llr_matrix,
     rank_substitutions,
-    tolerant_positions,
     uniform_entropy_bits,
 )
 from tests.fixtures import make_result, one_hot_rows, uniform_rows
@@ -56,12 +55,6 @@ def test_deleterious_fraction_counts_negative_non_wildtype_entries() -> None:
 
     fractions = deleterious_fraction_per_position(llr)
     assert fractions == pytest.approx([5 / 19, 5 / 19])
-
-
-def test_tolerant_positions_uses_strict_threshold_comparison() -> None:
-    """Only positions strictly below the threshold are returned (boundary excluded)."""
-    fractions = np.array([0.10, 0.80, 0.79])
-    assert tolerant_positions(fractions, threshold=0.8).tolist() == [0, 2]
 
 
 def test_rank_substitutions_orders_descending_and_skips_wildtype() -> None:

@@ -36,7 +36,7 @@ the same job.
 
 import numpy as np
 
-from esmlab.connectors.base import SequenceLogits
+from esmlab.connectors.base import SequenceLogits, check_region
 from esmlab.params import ParamSpec
 
 # Canonical model ids -> HuggingFace repos published by EvolutionaryScale.
@@ -144,43 +144,46 @@ class LocalConnector:
         self._tokenizer = get_esmc_model_tokenizers()
         self._last_peak_memory_bytes: int | None = None
 
-    def masked_sequence_logits(self, sequence: str) -> SequenceLogits:
+    def masked_sequence_logits(
+        self, sequence: str, start: int, stop: int
+    ) -> SequenceLogits:
         """Runs leave-one-out masking on the loaded checkpoint.
 
-        Builds ``len(sequence)`` token-id copies, each with one residue
-        replaced by the mask token (offset by +1 to skip the leading ``<cls>``),
-        then runs forward passes in ``batch_size`` chunks and gathers the
-        prediction row at each masked position. Returns a
-        :class:`SequenceLogits` whose axis 0 maps one-to-one onto the
-        sequence residues. What consumes it is not this module's business:
-        masked logits feed mutation scoring, embedding and classification
-        alike.
+        Builds one token-id copy per residue of ``start``..``stop``, each with
+        that residue replaced by the mask token (offset by +1 to skip the
+        leading ``<cls>``), then runs forward passes in ``batch_size`` chunks
+        and gathers the prediction row at each masked position. The whole
+        sequence is in every forward pass - it is the context - so scoring a
+        region costs one pass per scored residue and its rows are identical to
+        the ones a full sweep would produce. What consumes them is not this
+        module's business: masked logits feed mutation scoring, embedding and
+        classification alike.
         """
         torch = self._torch
         # Attribute access routes through BatchEncoding.__getattr__, avoiding
         # the imprecise subscript typing of its values.
+        check_region(sequence, start, stop)
         token_ids = [int(token_id) for token_id in self._tokenizer(sequence).input_ids]
-        sequence_length = len(sequence)
         mask_id = self._tokenizer.mask_token_id
         assert mask_id is not None
 
-        # Row i masks residue i; the +1 skips the leading <cls> token.
+        # Row i masks residue start + i; the +1 skips the leading <cls> token.
         variants = []
-        for offset in range(1, sequence_length + 1):
+        for position in range(start, stop + 1):
             variant = token_ids.copy()
-            variant[offset] = mask_id
+            variant[position] = mask_id
             variants.append(variant)
 
         rows = []
         if self._device == "cuda":
             torch.cuda.reset_peak_memory_stats(self._device)
-        for start in range(0, sequence_length, self._batch_size):
-            chunk = variants[start : start + self._batch_size]
+        for offset in range(0, len(variants), self._batch_size):
+            chunk = variants[offset : offset + self._batch_size]
             input_ids = torch.tensor(chunk, dtype=torch.long, device=self._device)
             with torch.inference_mode():
                 output = self._model(input_ids=input_ids)
-            positions = torch.arange(start, start + len(chunk)) + 1
-            rows.append(output.logits[torch.arange(len(chunk)), positions])
+            masked = torch.arange(len(chunk)) + start + offset
+            rows.append(output.logits[torch.arange(len(chunk)), masked])
         if self._device == "cuda":
             self._last_peak_memory_bytes = int(
                 torch.cuda.max_memory_allocated(self._device)
@@ -191,6 +194,8 @@ class LocalConnector:
         stacked = torch.cat(rows).float().cpu().numpy().astype(np.float32)
         return SequenceLogits(
             sequence=sequence,
+            start=start,
+            stop=stop,
             logits=stacked,
             vocab=self._tokenizer.get_vocab(),
         )

@@ -6,7 +6,7 @@ from pathlib import Path
 from esmlab.inference import PERF_COLUMNS, InferenceSettings, run_inference
 from esmlab.seqio import NamedSequence, parse_sequences
 from esmlab.storage import open_storage
-from tests.fixtures import sqlite_settings
+from tests.fixtures import named, sqlite_settings, whole
 
 SEQUENCE = "ACDEFGHIKLMNPQRSTVWY"
 OTHER_SEQUENCE = "MKTAYIAKQRQISFVK"
@@ -30,7 +30,7 @@ def _settings(
         modal_token_id="",
         modal_token_secret="",
         modal_gpu="",
-        sequences=sequences or [NamedSequence("tiny", SEQUENCE)],
+        sequences=sequences or [named("tiny", SEQUENCE)],
         storage=sqlite_settings(tmp_path / "logits.sqlite3"),
         perf_report=tmp_path / "performance.csv",
     )
@@ -49,8 +49,11 @@ def test_run_stores_one_entry_per_sequence(tmp_path: Path) -> None:
 
     assert (stats.n_sequences, stats.computed, stats.skipped) == (1, 1, 0)
     storage = open_storage(settings.storage)
-    assert storage.has(model="esmc-600m", sequence=SEQUENCE) is True
-    assert storage.load(model="esmc-600m", sequence=SEQUENCE).label == "tiny"
+    assert storage.has(model="esmc-600m", sequence=SEQUENCE, **whole(SEQUENCE)) is True
+    assert (
+        storage.load(model="esmc-600m", sequence=SEQUENCE, **whole(SEQUENCE)).label
+        == "tiny"
+    )
 
 
 def test_second_identical_run_skips_everything(tmp_path: Path) -> None:
@@ -68,7 +71,7 @@ def test_duplicate_sequences_compute_once(tmp_path: Path) -> None:
     """A sequence listed twice is one unit of work, not one computed and one skipped."""
     settings = _settings(
         tmp_path,
-        [NamedSequence("first", SEQUENCE), NamedSequence("second", SEQUENCE)],
+        [named("first", SEQUENCE), named("second", SEQUENCE)],
     )
 
     stats = run_inference(settings)
@@ -76,22 +79,28 @@ def test_duplicate_sequences_compute_once(tmp_path: Path) -> None:
     assert (stats.n_sequences, stats.computed, stats.skipped) == (1, 1, 0)
     # The first-seen label wins, since dedup keeps the first occurrence.
     storage = open_storage(settings.storage)
-    assert storage.load(model="esmc-600m", sequence=SEQUENCE).label == "first"
+    assert (
+        storage.load(model="esmc-600m", sequence=SEQUENCE, **whole(SEQUENCE)).label
+        == "first"
+    )
 
 
 def test_distinct_sequences_sharing_a_label_are_both_stored(tmp_path: Path) -> None:
     """Labels are display-only, so a shared label never collapses two sequences."""
     settings = _settings(
         tmp_path,
-        [NamedSequence("dup", SEQUENCE), NamedSequence("dup", OTHER_SEQUENCE)],
+        [named("dup", SEQUENCE), named("dup", OTHER_SEQUENCE)],
     )
 
     stats = run_inference(settings)
 
     assert (stats.n_sequences, stats.computed) == (2, 2)
     storage = open_storage(settings.storage)
-    assert storage.has(model="esmc-600m", sequence=SEQUENCE) is True
-    assert storage.has(model="esmc-600m", sequence=OTHER_SEQUENCE) is True
+    assert storage.has(model="esmc-600m", sequence=SEQUENCE, **whole(SEQUENCE)) is True
+    assert (
+        storage.has(model="esmc-600m", sequence=OTHER_SEQUENCE, **whole(OTHER_SEQUENCE))
+        is True
+    )
 
 
 def test_perf_csv_gets_a_header_and_one_row_per_run(tmp_path: Path) -> None:
@@ -146,12 +155,14 @@ def test_header_metadata_reaches_storage(tmp_path: Path) -> None:
     """
     fasta = tmp_path / "input.fa"
     fasta.write_text(
-        f'>stat1|{{"source": "UniProt:P12345", "targets": ["P11111"]}}\n{SEQUENCE}\n'
+        f'>stat1|1|{len(SEQUENCE)}|{{"source": "UniProt:P12345", "targets": ["P11111"]}}\n{SEQUENCE}\n'
     )
     settings = _settings(tmp_path, parse_sequences([], [fasta]))
 
     run_inference(settings)
 
-    stored = open_storage(settings.storage).load(model="esmc-600m", sequence=SEQUENCE)
+    stored = open_storage(settings.storage).load(
+        model="esmc-600m", sequence=SEQUENCE, **whole(SEQUENCE)
+    )
     assert stored.label == "stat1"
     assert stored.metadata == {"source": "UniProt:P12345", "targets": ["P11111"]}

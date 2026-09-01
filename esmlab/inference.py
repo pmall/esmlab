@@ -7,6 +7,11 @@ nothing about any of them — it orchestrates a connector and a
 
 Persistence is unconditional: an entry already in storage is skipped, never
 recomputed. That is the whole point of separating this stage from reporting.
+
+A record is scored only at the residues its header named. The whole sequence
+still goes into every forward pass - it is the context that makes the
+predictions worth anything - but masking runs over that region alone, so a
+15-residue peptide inside a 500-residue protein costs 15 passes rather than 500.
 """
 
 import csv
@@ -94,13 +99,15 @@ class _SeqTiming:
 def _distinct_sequences(sequences: list[NamedSequence]) -> list[NamedSequence]:
     """Drops repeated sequences, keeping the first occurrence and its label.
 
-    Storage would already make a repeat a no-op, but counting it as a "skip"
-    would misreport the run: nothing was skipped, the same sequence was simply
-    listed twice.
+    Two records are the same work only if they name the same region of the same
+    sequence, so one protein may appear twice under two regions. Storage would
+    already make a true repeat a no-op, but counting it as a "skip" would
+    misreport the run: nothing was skipped, the same request was simply listed
+    twice.
     """
-    seen: dict[str, NamedSequence] = {}
+    seen: dict[tuple[str, int, int], NamedSequence] = {}
     for named in sequences:
-        seen.setdefault(named.sequence, named)
+        seen.setdefault((named.sequence, named.start, named.stop), named)
     return list(seen.values())
 
 
@@ -150,11 +157,16 @@ def _compute_missing(
     ) as bar:
         for named in bar:
             bar.set_postfix_str(f"{named.name} L={len(named.sequence)}")
-            if storage.has(model=settings.model, sequence=named.sequence):
+            if storage.has(
+                model=settings.model,
+                sequence=named.sequence,
+                start=named.start,
+                stop=named.stop,
+            ):
                 timings.append(
                     _SeqTiming(
-                        key=logits_key(named.sequence),
-                        length=len(named.sequence),
+                        key=logits_key(named.sequence, named.start, named.stop),
+                        length=named.stop - named.start + 1,
                         duration_s=0.0,
                         computed=False,
                         gpu_peak_bytes=None,
@@ -164,7 +176,9 @@ def _compute_missing(
                 continue
 
             start = perf_counter()
-            result = connector.masked_sequence_logits(named.sequence)
+            result = connector.masked_sequence_logits(
+                named.sequence, named.start, named.stop
+            )
             duration = perf_counter() - start
             storage.save(
                 result,
@@ -174,8 +188,8 @@ def _compute_missing(
             )
             timings.append(
                 _SeqTiming(
-                    key=logits_key(named.sequence),
-                    length=len(named.sequence),
+                    key=logits_key(named.sequence, named.start, named.stop),
+                    length=len(result.residues),
                     duration_s=duration,
                     computed=True,
                     gpu_peak_bytes=connector.peak_memory_bytes(),

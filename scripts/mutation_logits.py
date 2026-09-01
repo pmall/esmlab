@@ -5,11 +5,13 @@ stored. It computes masked logits and persists them, which is the entry point
 for any logits-based topic; the module it drives, :mod:`esmlab.inference`, is
 topic-agnostic.
 
-Sequences come from positional arguments and/or ``--fasta`` files (repeatable);
-see :mod:`esmlab.seqio` for the header format that attaches JSON metadata to a
-record. A sequence already in storage is skipped rather than recomputed, so
-re-running over a grown FASTA only computes the new records, and a sequence
-listed twice is one unit of work.
+Sequences come from positional arguments and/or ``--fasta`` files (repeatable).
+A FASTA header is ``>label|start|stop`` with an optional ``|{...}`` metadata
+object: the coordinates name the sub-sequence to mask and are 1-based and
+inclusive, and only those residues are scored, though the whole sequence is
+what the model reads. See :mod:`esmlab.seqio`. A request already in storage is
+skipped rather than recomputed, so re-running over a grown FASTA only computes
+the new records, and a record listed twice is one unit of work.
 
 Backend flags (``--backend`` and its credentials) and storage flags
 (``--storage`` and its connection parameters) are generated from the

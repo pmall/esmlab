@@ -1,27 +1,20 @@
-"""Covers the report stage: artifacts per stored entry, manifest, free re-runs."""
+"""Covers the report stage: one page per stored entry, the index, free re-runs."""
 
-import csv
+import json
+import re
 from pathlib import Path
 
+import pytest
+
+from esmlab.amino_acids import VALID_AMINO_ACIDS
 from esmlab.inference import InferenceSettings, run_inference
-from esmlab.mutation_report import (
-    MANIFEST_COLUMNS,
-    SUMMARY_COLUMNS,
-    ReportSettings,
-    run_report,
-)
+from esmlab.mutation_report import ReportSettings, run_report
 from esmlab.seqio import NamedSequence
 from esmlab.storage import StorageSettings, logits_key, open_storage
-from tests.fixtures import sqlite_settings
+from tests.fixtures import named, sqlite_settings, whole
 
 SEQUENCE = "ACDEFGHIKLMNPQRSTVWY"
 OTHER_SEQUENCE = "MKTAYIAKQRQISFVK"
-ARTIFACT_NAMES = {
-    "entropy.png",
-    "deleterious_fraction.png",
-    "llr_heatmap.png",
-    "summary.csv",
-}
 
 
 def _populate(
@@ -51,7 +44,7 @@ def _populate(
 
 
 def _settings(
-    tmp_path: Path, *, threshold: float = 0.8, model: str = "esmc-600m"
+    tmp_path: Path, *, threshold: float = 0.8, model: str | None = "esmc-600m"
 ) -> ReportSettings:
     return ReportSettings(
         model=model,
@@ -62,43 +55,123 @@ def _settings(
     )
 
 
-def _summary_rows(path: Path) -> list[dict[str, str]]:
-    with path.open(newline="") as csv_file:
-        return list(csv.DictReader(csv_file))
+def _payload(page: Path) -> dict:
+    """Reads back the JSON island a rendered page carries."""
+    island = re.search(
+        r'<script type="application/json" id="payload">(.*?)</script>',
+        page.read_text(),
+        re.DOTALL,
+    )
+    assert island is not None
+    return json.loads(island.group(1))
 
 
-def _summary_path(tmp_path: Path, sequence: str = SEQUENCE) -> Path:
-    """Where the report stage writes a sequence's summary CSV."""
-    return tmp_path / "reports" / "esmc-600m" / logits_key(sequence) / "summary.csv"
+def _page(
+    tmp_path: Path,
+    sequence: str = SEQUENCE,
+    model: str = "esmc-600m",
+    start: int = 1,
+    stop: int | None = None,
+) -> Path:
+    """Where the report stage writes one request's page."""
+    key = logits_key(sequence, start, len(sequence) if stop is None else stop)
+    return tmp_path / "reports" / model / f"{key}.html"
 
 
-def test_report_writes_all_artifacts_per_entry(tmp_path: Path) -> None:
-    """Every stored entry gets three plots and a summary CSV under its key."""
-    _populate(tmp_path, [NamedSequence("tiny", SEQUENCE)])
+def test_a_run_writes_one_page_per_entry_and_an_index(tmp_path: Path) -> None:
+    """The page is the whole report: no sidecar files accompany it."""
+    _populate(tmp_path, [named("tiny", SEQUENCE)])
     settings = _settings(tmp_path)
 
     run_report(settings)
 
-    report_dir = settings.out_dir / "esmc-600m" / logits_key(SEQUENCE)
-    assert {path.name for path in report_dir.iterdir()} == ARTIFACT_NAMES
-    rows = _summary_rows(report_dir / "summary.csv")
-    assert list(rows[0]) == list(SUMMARY_COLUMNS)
-    assert len(rows) == len(SEQUENCE)
+    assert {path.name for path in (settings.out_dir / "esmc-600m").iterdir()} == {
+        f"{logits_key(SEQUENCE, 1, len(SEQUENCE))}.html",
+        "index.html",
+    }
 
 
-def test_manifest_maps_keys_back_to_labels(tmp_path: Path) -> None:
-    """The label survives only as manifest data, never as a path component."""
-    _populate(tmp_path, [NamedSequence("tiny", SEQUENCE)])
+def test_entry_page_carries_its_whole_payload(tmp_path: Path) -> None:
+    """The page is self-contained: the label and every array live in its JSON island.
+
+    Guards the property the whole design rests on - the template is static and
+    Python only supplies data - so a page can be opened straight from disk.
+    """
+    _populate(tmp_path, [named("tiny", SEQUENCE)])
     settings = _settings(tmp_path)
 
     run_report(settings)
 
-    with (settings.out_dir / "esmc-600m" / "manifest.csv").open(newline="") as handle:
-        rows = list(csv.DictReader(handle))
-    assert list(rows[0]) == list(MANIFEST_COLUMNS)
-    assert rows[0]["key"] == logits_key(SEQUENCE)
-    assert rows[0]["label"] == "tiny"
-    assert rows[0]["length"] == str(len(SEQUENCE))
+    payload = _payload(_page(tmp_path))
+    assert payload["label"] == "tiny"
+    assert payload["sequence"] == SEQUENCE
+    assert len(payload["entropy"]) == len(SEQUENCE)
+    assert len(payload["llr"]) == len(SEQUENCE)
+    assert len(payload["llr"][0]) == len(VALID_AMINO_ACIDS)
+    assert sorted(payload["amino_acids"]) == sorted(VALID_AMINO_ACIDS)
+
+
+def test_index_maps_keys_back_to_labels(tmp_path: Path) -> None:
+    """The label survives only as index data, never as a path component."""
+    _populate(tmp_path, [named("tiny", SEQUENCE)])
+    settings = _settings(tmp_path)
+
+    run_report(settings)
+
+    payload = _payload(settings.out_dir / "esmc-600m" / "index.html")
+    assert payload["model"] == "esmc-600m"
+    assert payload["entries"] == [
+        {
+            "key": logits_key(SEQUENCE, 1, len(SEQUENCE)),
+            "label": "tiny",
+            "length": len(SEQUENCE),
+            "start": 1,
+            "stop": len(SEQUENCE),
+            "full_length": len(SEQUENCE),
+            "created_utc": payload["entries"][0]["created_utc"],
+        }
+    ]
+
+
+def test_a_region_scores_and_reports_only_the_peptide(tmp_path: Path) -> None:
+    """A region is a compute scope: only its residues are masked and reported.
+
+    This is the point of naming coordinates - masking a 15-residue peptide
+    inside a 500-residue protein should cost 15 forward passes, not 500 - and
+    the page is about the peptide, numbered 1..n.
+    """
+    _populate(tmp_path, [named("peptide", SEQUENCE, 5, 9)])
+    settings = _settings(tmp_path)
+
+    run_report(settings)
+
+    payload = _payload(_page(tmp_path, start=5, stop=9))
+    assert (payload["start"], payload["stop"]) == (5, 9)
+    assert payload["full_sequence"] == SEQUENCE
+    assert payload["sequence"] == SEQUENCE[4:9]
+    assert payload["positions"] == [1, 2, 3, 4, 5]
+    assert len(payload["entropy"]) == 5
+    assert len(payload["llr"]) == 5
+    assert all(1 <= row["position"] <= 5 for row in payload["most_constrained"])
+    assert all(1 <= row["position"] <= 5 for row in payload["top_substitutions"])
+
+
+def test_a_region_stores_only_its_own_rows_against_the_whole_sequence(
+    tmp_path: Path,
+) -> None:
+    """The model saw the whole protein; only the region's positions were masked.
+
+    Storing the full sequence is what keeps the context recoverable - the rows
+    mean nothing without it - while the row count is the saving.
+    """
+    storage = open_storage(_populate(tmp_path, [named("peptide", SEQUENCE, 5, 9)]))
+
+    stored = storage.load(model="esmc-600m", sequence=SEQUENCE, start=5, stop=9)
+
+    assert stored.logits.sequence == SEQUENCE
+    assert (stored.logits.start, stored.logits.stop) == (5, 9)
+    assert stored.logits.logits.shape[0] == 5
+    assert stored.logits.residues == SEQUENCE[4:9]
 
 
 def test_rerun_with_new_threshold_touches_no_storage(tmp_path: Path) -> None:
@@ -107,19 +180,18 @@ def test_rerun_with_new_threshold_touches_no_storage(tmp_path: Path) -> None:
     This is the payoff of splitting compute from reporting - the old unified
     pipeline re-ran the model to change one presentation knob.
     """
-    storage = open_storage(_populate(tmp_path, [NamedSequence("tiny", SEQUENCE)]))
-    before = storage.load(model="esmc-600m", sequence=SEQUENCE)
+    storage = open_storage(_populate(tmp_path, [named("tiny", SEQUENCE)]))
+    before = storage.load(model="esmc-600m", sequence=SEQUENCE, **whole(SEQUENCE))
 
-    summary = _summary_path(tmp_path)
     run_report(_settings(tmp_path, threshold=0.0))
-    strict = sum(row["tolerant"] == "True" for row in _summary_rows(summary))
+    strict = sum(_payload(_page(tmp_path))["tolerant"])
 
     run_report(_settings(tmp_path, threshold=1.0))
-    loose = sum(row["tolerant"] == "True" for row in _summary_rows(summary))
+    loose = sum(_payload(_page(tmp_path))["tolerant"])
 
     assert loose > strict
     # A rewritten row would carry a fresh created_utc.
-    after = storage.load(model="esmc-600m", sequence=SEQUENCE)
+    after = storage.load(model="esmc-600m", sequence=SEQUENCE, **whole(SEQUENCE))
     assert after.created_utc == before.created_utc
 
 
@@ -127,35 +199,71 @@ def test_two_records_sharing_a_label_both_get_reports(tmp_path: Path) -> None:
     """Duplicate FASTA headers are fine now that keys come from the sequence."""
     _populate(
         tmp_path,
-        [NamedSequence("dup", SEQUENCE), NamedSequence("dup", OTHER_SEQUENCE)],
+        [named("dup", SEQUENCE), named("dup", OTHER_SEQUENCE)],
     )
     settings = _settings(tmp_path)
 
     run_report(settings)
 
     model_dir = settings.out_dir / "esmc-600m"
-    assert (model_dir / logits_key(SEQUENCE)).is_dir()
-    assert (model_dir / logits_key(OTHER_SEQUENCE)).is_dir()
+    assert (model_dir / f"{logits_key(SEQUENCE, 1, len(SEQUENCE))}.html").is_file()
+    assert (
+        model_dir / f"{logits_key(OTHER_SEQUENCE, 1, len(OTHER_SEQUENCE))}.html"
+    ).is_file()
 
 
-def test_two_models_report_side_by_side(tmp_path: Path) -> None:
-    """The model is in the report path, so one --out holds both without overwriting."""
-    _populate(tmp_path, [NamedSequence("tiny", SEQUENCE)], model="esmc-600m")
-    _populate(tmp_path, [NamedSequence("tiny", SEQUENCE)], model="esmc-300m")
+def test_no_model_reports_every_model_in_one_run(tmp_path: Path) -> None:
+    """The default renders the whole store, each model with its own index.
 
-    run_report(_settings(tmp_path, model="esmc-600m"))
+    The model is in the report path, so the same sequence scored twice does not
+    overwrite itself.
+    """
+    _populate(tmp_path, [named("tiny", SEQUENCE)], model="esmc-600m")
+    _populate(tmp_path, [named("tiny", SEQUENCE)], model="esmc-300m")
+
+    run_report(_settings(tmp_path, model=None))
+
+    for model in ("esmc-600m", "esmc-300m"):
+        assert _page(tmp_path, model=model).is_file()
+        index = _payload(tmp_path / "reports" / model / "index.html")
+        assert index["model"] == model
+        assert [row["key"] for row in index["entries"]] == [
+            logits_key(SEQUENCE, 1, len(SEQUENCE))
+        ]
+
+
+def test_a_named_model_reports_only_that_model(tmp_path: Path) -> None:
+    """``--model`` narrows the run: the other model's pages are not written."""
+    _populate(tmp_path, [named("tiny", SEQUENCE)], model="esmc-600m")
+    _populate(tmp_path, [named("tiny", SEQUENCE)], model="esmc-300m")
+
     run_report(_settings(tmp_path, model="esmc-300m"))
 
-    out_dir = tmp_path / "reports"
-    key = logits_key(SEQUENCE)
-    assert (out_dir / "esmc-600m" / key / "summary.csv").is_file()
-    assert (out_dir / "esmc-300m" / key / "summary.csv").is_file()
+    assert _page(tmp_path, model="esmc-300m").is_file()
+    assert not (tmp_path / "reports" / "esmc-600m").exists()
 
 
-def test_empty_storage_writes_only_a_manifest(tmp_path: Path) -> None:
-    """Reporting a model with no entries is not an error."""
+def test_reporting_a_model_with_no_entries_names_the_stored_ones(
+    tmp_path: Path,
+) -> None:
+    """An unstored model is a CLI error, not an empty report directory.
+
+    Naming a model with no entries almost always means the compute run used a
+    different one; the message has to say which, and nothing may be written
+    under the wrong name.
+    """
+    _populate(tmp_path, [named("tiny", SEQUENCE)], model="esmc-300m")
+    settings = _settings(tmp_path, model="esmc-600m")
+
+    with pytest.raises(ValueError, match=r"esmc-300m \(1\)"):
+        run_report(settings)
+
+    assert not settings.out_dir.exists()
+
+
+def test_reporting_an_empty_storage_is_an_error(tmp_path: Path) -> None:
+    """Same for a store that holds nothing at all."""
     settings = _settings(tmp_path)
 
-    artifacts = run_report(settings)
-
-    assert [path.name for path in artifacts] == ["manifest.csv"]
+    with pytest.raises(ValueError, match="no entries at all"):
+        run_report(settings)

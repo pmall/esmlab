@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from esmlab.connectors.base import SequenceLogits
+from esmlab.connectors.base import SequenceLogits, check_region
 from esmlab.params import ParamSpec
 
 # Canonical model ids -> Biohub Platform model names.
@@ -43,10 +43,13 @@ class BiohubConnector:
             model=BIOHUB_MODEL_NAMES[model], url=url, token=token
         )
 
-    def masked_sequence_logits(self, sequence: str) -> SequenceLogits:
-        """Scores every leave-one-out mask via concurrent Biohub Platform requests.
+    def masked_sequence_logits(
+        self, sequence: str, start: int, stop: int
+    ) -> SequenceLogits:
+        """Scores the region's leave-one-out masks via concurrent Platform requests.
 
-        Each residue is replaced in turn by the SDK ``"_"`` mask placeholder;
+        Each residue of ``start``..``stop`` is replaced in turn by the SDK
+        ``"_"`` mask placeholder;
         the resulting masked strings are dispatched in parallel through the
         SDK executor (the dispatch pattern comes from the official
         mutation-scoring tutorial, but nothing here is specific to it). Row
@@ -67,24 +70,27 @@ class BiohubConnector:
                 raise output
             return output
 
+        check_region(sequence, start, stop)
+        scored = range(start, stop + 1)
         masked = [
-            sequence[:offset] + "_" + sequence[offset + 1 :]
-            for offset in range(len(sequence))
+            sequence[: position - 1] + "_" + sequence[position:] for position in scored
         ]
         with parallel_executor(show_progress=False) as executor:
             outputs = executor.execute_batch(user_func=fetch_logits, sequence=masked)
 
-        # Row i of variant i is the prediction at the masked residue; +1 skips BOS.
+        # Row i of variant i is the prediction at its masked residue; +1 skips BOS.
         rows = torch.stack(
             [
-                output.logits.sequence[offset + 1]
-                for offset, output in enumerate(outputs)
+                output.logits.sequence[position]
+                for position, output in zip(scored, outputs)
             ]
         )
         from esm.tokenization import get_esmc_model_tokenizers
 
         return SequenceLogits(
             sequence=sequence,
+            start=start,
+            stop=stop,
             logits=rows.float().cpu().numpy().astype(np.float32),
             vocab=get_esmc_model_tokenizers().get_vocab(),
         )

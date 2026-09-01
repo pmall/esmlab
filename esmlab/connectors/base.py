@@ -21,33 +21,67 @@ CANONICAL_STRUCTURE_MODELS = ("esmfold2", "esmfold2-fast")
 
 @dataclass(frozen=True)
 class SequenceLogits:
-    """Masked-language-model logits for one sequence.
+    """Masked-language-model logits for residues ``start``..``stop`` of a sequence.
 
-    ``logits[i]`` holds the token-distribution row predicted when residue i of
-    ``sequence`` was the masked position; BOS/EOS rows are stripped so axis 0
-    maps one-to-one onto sequence residues. ``vocab`` maps token strings to
-    column indices of the logits array.
+    ``logits[i]`` holds the token-distribution row predicted when residue
+    ``start + i`` was masked; BOS/EOS rows are stripped. Coordinates are 1-based
+    and inclusive.
+
+    ``sequence`` is the whole sequence, not just the scored part: it is the
+    context every row was predicted in, and the rows mean nothing without it.
+    The same residues read out of two different sequences are two different
+    results. Only ``start``..``stop`` are masked, so scoring a 15-residue
+    peptide inside a 500-residue protein is 15 forward passes rather than 500.
+
+    ``vocab`` maps token strings to column indices of the logits array.
     """
 
     sequence: str
+    start: int
+    stop: int
     logits: npt.NDArray[np.float32]
     vocab: Mapping[str, int]
+
+    @property
+    def residues(self) -> str:
+        """The scored residues, one per row of ``logits``."""
+        return self.sequence[self.start - 1 : self.stop]
+
+
+def check_region(sequence: str, start: int, stop: int) -> None:
+    """Rejects coordinates that do not name residues of ``sequence``.
+
+    Shared by every backend so they agree on the 1-based inclusive convention
+    and fail the same way.
+    """
+    if not 1 <= start <= stop <= len(sequence):
+        raise ValueError(
+            f"region {start}-{stop} outside 1-{len(sequence)} "
+            "(coordinates are 1-based and inclusive)"
+        )
 
 
 class ModelConnector(Protocol):
     """Backend contract: mask each residue, read the logits, plus memory reporting.
 
     Every backend (stub, local, biohub, modal) implements
-    :meth:`masked_sequence_logits`. Connectors only compute: persisting the
-    result is the caller's job, via :mod:`esmlab.storage`.
+    :meth:`masked_sequence_logits`, masking only the region asked for.
+    Connectors only compute: persisting the result is the caller's job, via
+    :mod:`esmlab.storage`.
     :meth:`peak_memory_bytes` exposes the peak memory of the last
     call where the backend can observe it (CUDA on the local backend); it
     returns ``None`` for backends with no observable memory (stub, biohub, modal,
     or the local backend on CPU).
     """
 
-    def masked_sequence_logits(self, sequence: str) -> SequenceLogits:
-        """Returns per-position masked-logits for ``sequence`` (axis 0 aligns to residues)."""
+    def masked_sequence_logits(
+        self, sequence: str, start: int, stop: int
+    ) -> SequenceLogits:
+        """Masked logits for residues ``start``..``stop`` of ``sequence``.
+
+        ``sequence`` is always passed whole - it is the context - while
+        ``start``/``stop`` say which residues to mask and score.
+        """
         ...
 
     def peak_memory_bytes(self) -> int | None:

@@ -27,10 +27,11 @@ official ESM protein language models from EvolutionaryScale/Biohub.
 | `esmlab/connectors/` | model backends behind one Protocol in `base.py`, one module per backend, each co-locating its own CLI params |
 | `esmlab/storage.py` | logits persistence: schema, SQLite/PostgreSQL backends, and the storage CLI params both scripts share |
 | `esmlab/params.py` | `ParamSpec` / `resolve_params` / `load_env`, shared by connectors and storage |
-| `esmlab/seqio.py` | sequence input: FASTA parsing, validation, the `NamedSequence` record |
+| `esmlab/seqio.py` | sequence input: FASTA parsing (label, start/stop, metadata), validation, the `NamedSequence` record |
 | `esmlab/inference.py` | compute stage: orchestrates a connector and a storage, appends the perf CSV |
 | `esmlab/amino_acids.py` | the canonical amino-acid alphabet |
-| `esmlab/mutation_*.py`, `esmlab/plotting.py` | the mutation-analysis topic: scoring math, report assembly, its plots |
+| `esmlab/mutation_*.py` | the mutation-analysis topic: scoring math, report payload and pages, artifact writing |
+| `esmlab/templates/` | the report's static HTML pages; Python only injects their JSON payload |
 | `tests/` | pytest suite; model-dependent paths run against the `stub` backend |
 | `data/` | generated outputs and databases, gitignored |
 | `references/` | read-only upstream ESM submodule (see Reference map) |
@@ -54,7 +55,7 @@ Script topology describes how a topic is assembled from these layers.
   (`esmfold2` / `esmfold2-fast`, structure prediction — not yet wired to a
   connector). Each backend maps a canonical id to its own scheme (HF repo,
   dated Biohub name).
-- Pure logic (entropy, LLR math, parsing, plotting, I/O) stays separate from
+- Pure logic (entropy, LLR math, parsing, rendering, I/O) stays separate from
   model calls so it runs and is tested on CPU; model-dependent paths are
   tested with the stub backend.
 - Backend and storage configuration is loaded from `.env` via python-dotenv;
@@ -90,13 +91,35 @@ Everything below the script layer is topic-agnostic:
 | script | module | does |
 | --- | --- | --- |
 | `scripts/mutation_logits.py` | `esmlab/inference.py` | computes missing logits and stores them; appends the perf CSV |
-| `scripts/mutation_report.py` | `esmlab/mutation_report.py` (+ `mutation_scoring.py`, `plotting.py`) | reads a storage and renders every entry |
+| `scripts/mutation_report.py` | `esmlab/mutation_report.py` (+ `mutation_scoring.py`, `mutation_render.py`) | reads a storage and renders every entry, for every model, as one HTML page |
 
 Both accept the same storage flags, and `mutation_logits` prints the
 `mutation_report` command line that reopens the store it just wrote.
 `mutation_logits.py` drives the topic-agnostic compute phase: it computes
 masked logits and stores them, which is the entry point for any logits-based
 topic.
+
+The report stage is split so nothing in it owns both data and files:
+`mutation_scoring.analyze` derives the numbers, `mutation_render` turns them
+into a JSON payload and fills a static template with it, and
+`mutation_report` is the only part that knows about paths. A page carries its
+whole payload and draws itself with Chart.js from a CDN, so it opens straight
+from disk and is the entry's whole report — there is no sidecar file — and a
+future web view over the same storage can serve the payload from the same two
+calls instead of re-deriving anything. A run renders every model in the store
+unless `--model` narrows it, each model's pages under `<out>/<model>/` beside
+their own `index.html`.
+
+Every FASTA header names the sub-sequence it is about — `>label|start|stop`,
+1-based and inclusive, with an optional `|{...}` metadata object. The whole
+sequence is still what the model sees on every forward pass, because a peptide
+alone gives it no context to condition on, but only those residues are masked,
+so the cost is one pass per residue of interest rather than per residue of the
+protein. A stored row therefore covers its own region, which is why
+`logits_key` digests `start`/`stop` alongside the sequence and two
+sub-sequences of one protein are two rows. The report is about the
+sub-sequence: it numbers those residues 1..n and records the coordinates as
+provenance.
 
 ## Reference map
 

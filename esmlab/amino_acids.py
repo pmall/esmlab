@@ -1,4 +1,4 @@
-"""Shared amino-acid domain data used across analysis, IO, and plotting."""
+"""Shared amino-acid domain data used across analysis, IO, and reporting."""
 
 # The 20 canonical amino acids, in a fixed order used as the column order for
 # every (sequence_length, 20) analysis array.
@@ -25,7 +25,7 @@ VALID_AMINO_ACIDS = (
     "Y",
 )
 
-# Isoelectric points, used only to order heatmap rows by charge
+# Isoelectric points, used only to order the report matrix's rows by charge
 # https://www.vanderbilt.edu/AnS/Chemistry/Rizzo/stuff/AA/AminoAcids.html
 AA_TO_ISOELECTRIC_POINT: dict[str, float] = {
     "A": 6.11,

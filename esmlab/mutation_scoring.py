@@ -7,6 +7,8 @@ distributions also cover special tokens (<cls>, <mask>, ...), which would
 inflate entropies uniformly without carrying mutation information.
 """
 
+from dataclasses import dataclass
+
 import numpy as np
 import numpy.typing as npt
 from numpy import newaxis
@@ -18,8 +20,8 @@ from esmlab.connectors.base import SequenceLogits
 def uniform_entropy_bits(alphabet_size: int) -> float:
     """Entropy of a uniform distribution over ``alphabet_size`` symbols.
 
-    Used by :mod:`esmlab.plotting` to draw uniform-distribution reference
-    lines on the per-position entropy bar chart.
+    Used by :mod:`esmlab.mutation_render` to place the uniform-distribution
+    reference lines on the entropy chart.
     """
     return float(np.log2(alphabet_size))
 
@@ -40,8 +42,8 @@ def aa_log_probs(result: SequenceLogits) -> npt.NDArray[np.float64]:
 def entropy_per_position(result: SequenceLogits) -> npt.NDArray[np.float64]:
     """Shannon entropy in bits of the amino-acid distribution at each position.
 
-    Built on :func:`aa_log_probs`; consumed by :func:`run_report` for the
-    entropy plot and the most-constrained-positions report.
+    Built on :func:`aa_log_probs`; bundled into :class:`EntryAnalysis`, which
+    feeds the entropy chart and the most-constrained-positions highlights.
     """
     probs = np.exp(aa_log_probs(result))
     return -(probs * np.log2(probs)).sum(axis=1)
@@ -55,10 +57,12 @@ def llr_matrix(result: SequenceLogits) -> npt.NDArray[np.float64]:
 
     Built on :func:`aa_log_probs`; consumed by
     :func:`deleterious_fraction_per_position`, :func:`rank_substitutions`,
-    and :func:`run_report` (heatmap + summary CSV).
+    and the report's substitution matrix and summary CSV.
     """
     log_probs = aa_log_probs(result)
-    wildtype_columns = [VALID_AMINO_ACIDS.index(aa) for aa in result.sequence]
+    # ``residues`` and not ``sequence``: a row is one masked position, and only
+    # a request covering the whole sequence makes the two the same string.
+    wildtype_columns = [VALID_AMINO_ACIDS.index(aa) for aa in result.residues]
     return (
         log_probs - log_probs[np.arange(len(log_probs)), wildtype_columns][:, newaxis]
     )
@@ -69,22 +73,10 @@ def deleterious_fraction_per_position(
 ) -> npt.NDArray[np.float64]:
     """Fraction of the 19 non-wildtype substitutions with negative LLR.
 
-    Takes the :func:`llr_matrix` output; feeds
-    :func:`tolerant_positions` and the per-position scatter plot in
-    :func:`run_report`.
+    Takes the :func:`llr_matrix` output; feeds the report's per-position
+    scatter chart and its per-position tolerant flag.
     """
     return (llr < 0).sum(axis=1) / (llr.shape[1] - 1)
-
-
-def tolerant_positions(
-    fractions: npt.NDArray[np.float64], threshold: float
-) -> npt.NDArray[np.int64]:
-    """Zero-based indices of positions whose deleterious fraction is below ``threshold``.
-
-    Consumes :func:`deleterious_fraction_per_position`'s output; used by
-    :func:`run_report` to list candidate library-design sites.
-    """
-    return np.flatnonzero(fractions < threshold)
 
 
 def rank_substitutions(
@@ -95,8 +87,8 @@ def rank_substitutions(
     Positions are 1-indexed; wildtype self-substitutions are excluded because
     their LLR is 0 by definition and would otherwise crowd the ranking.
 
-    Consumes :func:`llr_matrix`'s output; called by :func:`run_report` to
-    print the top tolerated substitutions.
+    Consumes :func:`llr_matrix`'s output; called by
+    :mod:`esmlab.mutation_render` for the top-tolerated-substitutions list.
     """
     scores: list[tuple[int, str, str, float]] = []
     for position, wildtype in enumerate(sequence):
@@ -109,3 +101,42 @@ def rank_substitutions(
             )
     scores.sort(key=lambda item: item[3], reverse=True)
     return scores[:top_k]
+
+
+@dataclass(frozen=True)
+class EntryAnalysis:
+    """Everything derived from one stored entry, computed once.
+
+    The three arrays here are what every consumer of this module needs, and
+    they build on each other (``fractions`` is derived from ``llr``), so a
+    caller that recomputed them separately would do the same work twice. Row
+    ``i`` of each describes residue ``start + i`` of the stored sequence, whose
+    wildtype is ``residues[i]``.
+
+    Assembled by :func:`analyze`; consumed by :mod:`esmlab.mutation_render`,
+    which turns it into the report payload.
+    """
+
+    residues: str
+    start: int
+    stop: int
+    entropies: npt.NDArray[np.float64]
+    llr: npt.NDArray[np.float64]
+    fractions: npt.NDArray[np.float64]
+
+
+def analyze(result: SequenceLogits) -> EntryAnalysis:
+    """Runs the whole scoring chain over one sequence's logits.
+
+    The single entry point into this module for the report stage: pure CPU
+    work over stored arrays, with no model, no storage and no I/O.
+    """
+    llr = llr_matrix(result)
+    return EntryAnalysis(
+        residues=result.residues,
+        start=result.start,
+        stop=result.stop,
+        entropies=entropy_per_position(result),
+        llr=llr,
+        fractions=deleterious_fraction_per_position(llr),
+    )

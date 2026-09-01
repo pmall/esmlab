@@ -103,6 +103,8 @@ class _RemoteLogits:
     """
 
     sequence: str
+    start: int
+    stop: int
     logits: npt.NDArray[np.float32]
     vocab: dict[str, int]
 
@@ -163,11 +165,13 @@ def _build_app(gpu: str, model: str):
     )
 
     @app.function(gpu=gpu, scaledown_window=300, volumes={_HF_CACHE_DIR: hf_cache})
-    def masked_logits(sequence: str) -> _RemoteLogits:
-        """Remote entrypoint: scores ``sequence`` on the GPU container."""
-        result = _connector_for(model).masked_sequence_logits(sequence)
+    def masked_logits(sequence: str, start: int, stop: int) -> _RemoteLogits:
+        """Remote entrypoint: scores ``start``..``stop`` of ``sequence``."""
+        result = _connector_for(model).masked_sequence_logits(sequence, start, stop)
         return _RemoteLogits(
             sequence=result.sequence,
+            start=result.start,
+            stop=result.stop,
             logits=result.logits,
             vocab=dict(result.vocab),
         )
@@ -202,19 +206,24 @@ class ModalConnector:
         if token_secret:
             os.environ["MODAL_TOKEN_SECRET"] = token_secret
 
-    def masked_sequence_logits(self, sequence: str) -> SequenceLogits:
+    def masked_sequence_logits(
+        self, sequence: str, start: int, stop: int
+    ) -> SequenceLogits:
         """Runs one remote scoring call and rehydrates the result locally.
 
         Builds the app via :func:`_build_app`, invokes the remote
         ``masked_logits`` worker on a rented GPU, and converts the
         :class:`_RemoteLogits` payload back into a :class:`SequenceLogits`
-        for the caller to persist.
+        for the caller to persist. The coordinates cross the boundary as-is, so
+        a region costs one remote forward pass per scored residue.
         """
         app, masked_logits = _build_app(self._gpu, self._model)
         with app.run():
-            payload: _RemoteLogits = masked_logits.remote(sequence)
+            payload: _RemoteLogits = masked_logits.remote(sequence, start, stop)
         return SequenceLogits(
             sequence=payload.sequence,
+            start=payload.start,
+            stop=payload.stop,
             logits=np.asarray(payload.logits, dtype=np.float32),
             vocab=payload.vocab,
         )

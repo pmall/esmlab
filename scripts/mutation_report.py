@@ -8,13 +8,19 @@ is a sibling script rather than another model run.
 
 It iterates the storage rather than an input file — the store is the source of
 truth for what has been computed — and renders every entry held for ``--model``.
-Artifacts land in ``<out>/<model>/<key>/``, keyed by the sequence's storage
-digest rather than by its label, plus a ``manifest.csv`` mapping each key back
-to a label for humans. The model is in the path because the key is the
-sequence's alone, so two models would otherwise overwrite each other.
+Each entry becomes a self-contained ``<out>/<model>/<key>.html`` page, keyed by
+the sequence's storage digest rather than by its label, beside an
+``index.html`` linking that model's keys back to labels for humans. The model
+is in the path because the key is the sequence's alone, so two models would
+otherwise overwrite each other. Open a model's ``index.html`` to read a run; a
+page needs a network connection the first time, for the charting library it
+loads from a CDN.
 
-Takes the same storage flags as ``mutation_logits.py``, which prints the exact
-command line that reaches the store it wrote.
+``--model`` is optional: the default renders every model the store holds, since
+reporting costs no model time. Naming a model with nothing stored is a CLI
+error listing the models that do have entries.
+
+Takes the same storage flags as ``mutation_logits.py``.
 """
 
 import argparse
@@ -42,8 +48,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--model",
         choices=CANONICAL_SEQUENCE_MODELS,
-        default="esmc-600m",
-        help="Report on entries stored for this model (default: esmc-600m)",
+        default=None,
+        help="Report only on entries stored for this model (default: every model)",
     )
     add_storage_arguments(parser)
     parser.add_argument(

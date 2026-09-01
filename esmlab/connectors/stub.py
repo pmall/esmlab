@@ -6,7 +6,7 @@ import numpy as np
 import numpy.typing as npt
 
 from esmlab.amino_acids import VALID_AMINO_ACIDS
-from esmlab.connectors.base import SequenceLogits
+from esmlab.connectors.base import SequenceLogits, check_region
 from esmlab.params import ParamSpec
 
 # Vocabulary of the stub backend: one column per canonical amino acid.
@@ -38,28 +38,36 @@ class StubConnector:
     def __init__(self, model: str) -> None:
         self._model = model
 
-    def masked_sequence_logits(self, sequence: str) -> SequenceLogits:
-        """Synthesizes one log-probability row per residue for ``sequence``.
+    def masked_sequence_logits(
+        self, sequence: str, start: int, stop: int
+    ) -> SequenceLogits:
+        """Synthesizes one log-probability row per residue of ``start``..``stop``.
 
         For each position a Dirichlet draw over the 20 amino acids is boosted
         toward the wildtype residue, producing varied entropies and
         deleterious fractions that exercise every branch of a downstream
         analysis. The output is seeded from :func:`_stable_seed` so results are
         reproducible per (model, sequence), which is what lets it stand in for
-        a real model in any pure-CPU test. Satisfies the
-        :class:`ModelConnector` protocol and is the default backend used by
-        tests and the CLI when no model is available.
+        a real model in any pure-CPU test; the draw is advanced once per
+        residue of the whole sequence so a row is the same whether it was asked
+        for alone or as part of the full sweep, exactly as a real backend's
+        would be. Satisfies the :class:`ModelConnector` protocol and is the
+        default backend used by tests and the CLI when no model is available.
         """
+        check_region(sequence, start, stop)
         rng = np.random.default_rng(_stable_seed(self._model, sequence))
         rows: list[npt.NDArray[np.float32]] = []
-        for wildtype in sequence:
+        for position, wildtype in enumerate(sequence, start=1):
             concentration = rng.uniform(0.3, 0.9)
             probs = rng.dirichlet(np.full(len(VALID_AMINO_ACIDS), concentration))
             probs[STUB_VOCAB[wildtype]] += rng.uniform(0.0, 3.0)
             probs /= probs.sum()
-            rows.append(np.log(probs).astype(np.float32))
+            if start <= position <= stop:
+                rows.append(np.log(probs).astype(np.float32))
         return SequenceLogits(
             sequence=sequence,
+            start=start,
+            stop=stop,
             logits=np.stack(rows),
             vocab=dict(STUB_VOCAB),
         )

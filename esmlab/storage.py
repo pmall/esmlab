@@ -1,4 +1,4 @@
-"""Persistence of computed masked-logits, keyed by ``(model, sequence)``.
+"""Persistence of computed masked-logits, keyed by ``(model, sequence, region)``.
 
 Storage is a layer of its own: connectors compute logits and never persist
 them, and this module persists logits and never computes them. Callers
@@ -15,13 +15,16 @@ Schema
 One ``sequence_logits`` table, primary key ``(model, sequence_key)``.
 
 - **The key is a digest, not the sequence.** Sequences run to thousands of
-  residues, so the key column is ``sequence_key = blake2b(sequence)`` and the
-  sequence itself is a regular column that is never compared. The digest covers
-  the sequence alone, which keeps ``model`` a free-standing key column: one
-  sequence has one key under every model, so ``WHERE sequence_key = ...``
-  answers which models have scored it. The *backend* is deliberately absent —
-  logits for a given ``(model, sequence)`` are the same artifact whichever
-  backend produced them, so a Modal run's results serve a later local run.
+  residues, so the key column is
+  ``sequence_key = blake2b(sequence, start, stop)`` and the sequence itself is a
+  regular column that is never compared. The digest covers the sequence and the
+  scored region, which keeps ``model`` a free-standing key column: one request
+  has one key under every model, so ``WHERE sequence_key = ...`` answers which
+  models have scored it. The same residues inside two different sequences are
+  two rows, because the context differs and so do the logits. The *backend* is
+  deliberately absent — logits for a given ``(model, sequence, region)`` are the
+  same artifact whichever backend produced them, so a Modal run's results serve
+  a later local run.
 - **Logits are a raw C-order float32 blob** with ``n_positions`` / ``n_tokens``
   in their own columns, so a read is a reshape rather than a deserialization
   and :meth:`has` never transfers the blob at all. The vocab is JSON text.
@@ -168,19 +171,25 @@ class StoredLogits:
     logits: SequenceLogits
 
 
-def logits_key(sequence: str) -> str:
-    """Content-addressed key for one sequence, the second half of the primary key.
+def logits_key(sequence: str, start: int, stop: int) -> str:
+    """Content-addressed key for one scored request, the second half of the PK.
 
     Sequences run to thousands of residues, so the row is keyed by a fixed-size
     digest rather than the sequence itself; the sequence is stored in its own
-    column and never compared. Hashing the sequence alone keeps ``model`` a
-    free-standing key column, so one sequence has one key across every model
-    and a single ``WHERE sequence_key = ?`` answers which models have scored it.
+    column and never compared. Hashing keeps ``model`` a free-standing key
+    column, so one request has one key across every model and a single
+    ``WHERE sequence_key = ?`` answers which models have scored it.
+
+    The digest is over the whole submitted sequence plus the region, which is
+    what makes the same residues read out of two different sequences two
+    different results: the context differs, so the logits differ.
 
     blake2b is fixed across processes, unlike the salted builtin ``hash()``, so
     a recompute lands on the same row instead of inserting a duplicate.
     """
-    return hashlib.blake2b(sequence.encode(), digest_size=16).hexdigest()
+    return hashlib.blake2b(
+        f"{sequence}:{start}-{stop}".encode(), digest_size=16
+    ).hexdigest()
 
 
 class LogitsStorage(Protocol):
@@ -191,11 +200,11 @@ class LogitsStorage(Protocol):
     identically, so callers never branch on which one they hold.
     """
 
-    def has(self, *, model: str, sequence: str) -> bool:
+    def has(self, *, model: str, sequence: str, start: int, stop: int) -> bool:
         """Whether an entry exists, without transferring the logits blob."""
         ...
 
-    def load(self, *, model: str, sequence: str) -> StoredLogits:
+    def load(self, *, model: str, sequence: str, start: int, stop: int) -> StoredLogits:
         """Returns the stored entry; raises :class:`KeyError` when absent."""
         ...
 
@@ -207,11 +216,15 @@ class LogitsStorage(Protocol):
         label: str,
         metadata: Metadata,
     ) -> None:
-        """Persists ``result`` under ``(model, result.sequence)``."""
+        """Persists ``result`` under ``(model, sequence, region)``."""
         ...
 
     def entries(self, *, model: str) -> Iterator[StoredLogits]:
         """Yields every stored entry for ``model``, ordered by sequence key."""
+        ...
+
+    def models(self) -> list[tuple[str, int]]:
+        """Every model the store holds, with its entry count, by model name."""
         ...
 
 
@@ -293,6 +306,8 @@ class _SqlLogitsStorage:
                 label TEXT NOT NULL,
                 metadata TEXT NOT NULL,
                 created_utc TEXT NOT NULL,
+                region_start INTEGER NOT NULL,
+                region_stop INTEGER NOT NULL,
                 n_positions INTEGER NOT NULL,
                 n_tokens INTEGER NOT NULL,
                 vocab TEXT NOT NULL,
@@ -302,19 +317,19 @@ class _SqlLogitsStorage:
             """
         )
 
-    def has(self, *, model: str, sequence: str) -> bool:
+    def has(self, *, model: str, sequence: str, start: int, stop: int) -> bool:
         """Whether the row exists, selecting a constant so the blob stays in the database."""
         rows = self._execute(
             f"SELECT 1 FROM {TABLE} WHERE model = ? AND sequence_key = ?",
-            (model, logits_key(sequence)),
+            (model, logits_key(sequence, start, stop)),
         )
         return bool(rows)
 
-    def load(self, *, model: str, sequence: str) -> StoredLogits:
+    def load(self, *, model: str, sequence: str, start: int, stop: int) -> StoredLogits:
         """Rehydrates the stored entry, raising :class:`KeyError` when absent."""
         rows = self._execute(
             f"{_SELECT_COLUMNS} FROM {TABLE} WHERE model = ? AND sequence_key = ?",
-            (model, logits_key(sequence)),
+            (model, logits_key(sequence, start, stop)),
         )
         if not rows:
             raise KeyError(f"No stored logits for {model!r} and this sequence")
@@ -339,14 +354,16 @@ class _SqlLogitsStorage:
             f"""
             INSERT INTO {TABLE} (
                 model, sequence_key, sequence, label, metadata, created_utc,
-                n_positions, n_tokens, vocab, logits
+                region_start, region_stop, n_positions, n_tokens, vocab, logits
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (model, sequence_key) DO UPDATE SET
                 sequence = EXCLUDED.sequence,
                 label = EXCLUDED.label,
                 metadata = EXCLUDED.metadata,
                 created_utc = EXCLUDED.created_utc,
+                region_start = EXCLUDED.region_start,
+                region_stop = EXCLUDED.region_stop,
                 n_positions = EXCLUDED.n_positions,
                 n_tokens = EXCLUDED.n_tokens,
                 vocab = EXCLUDED.vocab,
@@ -354,11 +371,13 @@ class _SqlLogitsStorage:
             """,
             (
                 model,
-                logits_key(result.sequence),
+                logits_key(result.sequence, result.start, result.stop),
                 result.sequence,
                 label,
                 json.dumps(dict(metadata)),
                 datetime.now(UTC).isoformat(),
+                result.start,
+                result.stop,
                 logits.shape[0],
                 logits.shape[1],
                 json.dumps(dict(result.vocab)),
@@ -374,6 +393,19 @@ class _SqlLogitsStorage:
         )
         for row in rows:
             yield _row_to_stored(row)
+
+    def models(self) -> list[tuple[str, int]]:
+        """Every model the store holds, with its entry count, by model name.
+
+        The store is keyed by ``(model, sequence)`` and nothing else records
+        which models have been computed, so this is how a caller tells "no
+        entries for this model" apart from "an empty store".
+        """
+        rows = self._execute(
+            f"SELECT model, COUNT(*) FROM {TABLE} GROUP BY model ORDER BY model"
+        )
+        # The driver types every column as ``object``; both are known here.
+        return [(str(row[0]), int(row[1])) for row in rows]  # type: ignore[arg-type]
 
 
 class SqliteLogitsStorage(_SqlLogitsStorage):
@@ -419,7 +451,7 @@ class PostgresLogitsStorage(_SqlLogitsStorage):
 
 _SELECT_COLUMNS: LiteralString = """SELECT
     model, sequence, label, metadata, created_utc,
-    n_positions, n_tokens, vocab, logits"""
+    region_start, region_stop, n_positions, n_tokens, vocab, logits"""
 
 
 def _row_to_stored(row: Row) -> StoredLogits:
@@ -435,6 +467,8 @@ def _row_to_stored(row: Row) -> StoredLogits:
         label,
         metadata,
         created_utc,
+        region_start,
+        region_stop,
         n_positions,
         n_tokens,
         vocab,
@@ -451,7 +485,11 @@ def _row_to_stored(row: Row) -> StoredLogits:
         metadata=json.loads(str(metadata)),
         created_utc=str(created_utc),
         logits=SequenceLogits(
-            sequence=str(sequence), logits=logits, vocab=json.loads(str(vocab))
+            sequence=str(sequence),
+            start=int(region_start),  # type: ignore[arg-type]
+            stop=int(region_stop),  # type: ignore[arg-type]
+            logits=logits,
+            vocab=json.loads(str(vocab)),
         ),
     )
 

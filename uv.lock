@@ -554,7 +554,6 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "esm" },
-    { name = "matplotlib" },
     { name = "numpy" },
     { name = "psycopg", extra = ["binary"] },
     { name = "python-dotenv" },
@@ -579,7 +578,6 @@ dev = [
 requires-dist = [
     { name = "esm", git = "https://github.com/evolutionaryscale/esm.git?rev=43ccece2ad485f27db46afdb67da2a9601e8f106" },
     { name = "flash-attn", marker = "extra == 'gpu'", url = "https://github.com/evolutionaryscale/wheels/releases/download/py312-pt211-cu13-sm80-90/flash_attn-2.7.4.post1-cp312-cp312-linux_x86_64.whl" },
-    { name = "matplotlib", specifier = ">=3.9" },
     { name = "numpy", specifier = ">=2.1" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
     { name = "python-dotenv", specifier = ">=1.0" },

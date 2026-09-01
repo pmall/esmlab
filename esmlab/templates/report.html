@@ -1,0 +1,389 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mutation report</title>
+<!--
+  One entry's mutation report. Everything the page draws comes from the JSON
+  island below, which esmlab.mutation_render fills in; nothing else is
+  substituted, so this file opens as-is with a hand-written payload.
+-->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    color-scheme: light;
+    --surface: #fcfcfb;
+    --plane: #f9f9f7;
+    --ink: #0b0b0b;
+    --ink-2: #52514e;
+    --muted: #898781;
+    --grid: #e1e0d9;
+    --border: rgba(11, 11, 11, 0.10);
+    --series: #2a78d6;
+    --threshold: #d03b3b;
+    --llr-mid: #f0efec;
+    --llr-pos: #2a78d6;
+    --llr-neg: #d03b3b;
+    --llr-wt: #e1e0d9;
+    --llr-wt-mark: #52514e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --surface: #1a1a19;
+      --plane: #0d0d0d;
+      --ink: #ffffff;
+      --ink-2: #c3c2b7;
+      --grid: #2c2c2a;
+      --border: rgba(255, 255, 255, 0.10);
+      --series: #3987e5;
+      --llr-mid: #383835;
+      --llr-pos: #3987e5;
+      --llr-neg: #e66767;
+      --llr-wt: #2c2c2a;
+      --llr-wt-mark: #c3c2b7;
+    }
+  }
+  body {
+    margin: 0;
+    padding: 32px 24px 64px;
+    background: var(--plane);
+    color: var(--ink);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 1100px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  h2 { font-size: 15px; margin: 0 0 12px; font-weight: 600; }
+  .meta { color: var(--ink-2); margin: 0 0 24px; }
+  .meta code { color: var(--muted); }
+  section {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+    margin-bottom: 20px;
+  }
+  .scroll { overflow-x: auto; }
+  /* Chart.js with maintainAspectRatio:false sizes a canvas to its container,
+     so the container must have a height of its own. Without one the canvas
+     height feeds back into the container's, and every resize grows both. */
+  .chart { position: relative; height: 260px; }
+  .sequence {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    word-break: break-all;
+    color: var(--muted);
+    margin: 0;
+  }
+  /* The scored region, highlighted in place so the flanking context stays
+     readable around it. */
+  .sequence mark {
+    background: color-mix(in oklab, var(--surface), var(--series) 18%);
+    color: var(--ink);
+    font-weight: 600;
+    border-radius: 2px;
+  }
+  .caption { color: var(--muted); font-size: 12px; margin: 8px 0 0; }
+  .highlights { display: flex; flex-wrap: wrap; gap: 32px; }
+  .highlights ul { margin: 0; padding-left: 18px; color: var(--ink-2); }
+  .highlights h3 { font-size: 13px; margin: 0 0 6px; color: var(--muted); font-weight: 600; }
+  table { border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { padding: 3px 8px; text-align: right; white-space: nowrap; }
+  thead th { color: var(--muted); font-weight: 600; border-bottom: 1px solid var(--grid); }
+  tbody tr:hover { background: var(--plane); }
+  /* Fixed layout, so a column's width comes from these variables and not from
+     the width of the position label sitting above it: with the default
+     algorithm every column stretched to fit its own header ("G1" vs "W19") and
+     the cells came out ragged. --matrix-cell is sized to hold the longest
+     label the header can carry (a residue letter plus three digits). */
+  .matrix {
+    --matrix-cell: 28px;
+    --matrix-label: 26px;
+    --matrix-row: 18px;
+    table-layout: fixed;
+    /* An explicit total width, so the columns keep their declared size past
+       the container's edge and .scroll scrolls. Left to size itself the table
+       squeezes every column into the viewport and goes ragged again, and
+       max-content still lets a wide header stretch its own column.
+       --matrix-columns is set on the element by the script below. */
+    width: calc(var(--matrix-label) + var(--matrix-columns) * var(--matrix-cell));
+    font-size: 11px;
+  }
+  .matrix th { padding: 0; color: var(--muted); font-weight: 600; }
+  .matrix thead th {
+    width: var(--matrix-cell);
+    height: var(--matrix-row);
+    font-size: 10px;
+    text-align: center;
+  }
+  .matrix thead th:first-child { width: var(--matrix-label); }
+  .matrix tbody th { padding-right: 6px; }
+  .matrix td {
+    padding: 0;
+    width: var(--matrix-cell);
+    height: var(--matrix-row);
+    border: 1px solid var(--surface);
+    /* --t is the magnitude of the cell's LLR, 0 at the neutral midpoint and 1
+       at the largest absolute LLR in the matrix. Mixing in CSS rather than in
+       JS lets the dark-mode poles above recolor the whole matrix on their own. */
+    background: color-mix(in oklab, var(--llr-mid), var(--llr-pos) calc(var(--t) * 100%));
+  }
+  .matrix td.deleterious {
+    background: color-mix(in oklab, var(--llr-mid), var(--llr-neg) calc(var(--t) * 100%));
+  }
+  /* The wildtype cell is structurally zero, not a measurement, so it leaves
+     the red/blue ramp entirely: a flat neutral fill plus a dot, rather than a
+     border that would read as an artifact of the cell beside it. */
+  .matrix td.wildtype { background: var(--llr-wt); position: relative; }
+  .matrix td.wildtype::after {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 4px;
+    height: 4px;
+    margin: -2px 0 0 -2px;
+    border-radius: 50%;
+    background: var(--llr-wt-mark);
+  }
+  .wt-key {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+    background: var(--llr-wt);
+    position: relative;
+  }
+  .wt-key::after {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 4px;
+    height: 4px;
+    margin: -2px 0 0 -2px;
+    border-radius: 50%;
+    background: var(--llr-wt-mark);
+  }
+  .legend { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; margin-top: 10px; }
+  .ramp { width: 160px; height: 10px; border-radius: 2px;
+          background: linear-gradient(to right, var(--llr-neg), var(--llr-mid), var(--llr-pos)); }
+</style>
+
+<script type="application/json" id="payload">__PAYLOAD__</script>
+
+<main>
+  <h1 id="title"></h1>
+  <p class="meta" id="meta"></p>
+
+  <section>
+    <h2>Sequence</h2>
+    <p class="sequence" id="sequence"></p>
+    <p class="caption" id="sequence-caption"></p>
+  </section>
+
+  <section>
+    <h2>Highlights</h2>
+    <div class="highlights">
+      <div><h3>Most constrained</h3><ul id="constrained"></ul></div>
+      <div><h3>Most mutation-tolerant</h3><ul id="tolerant"></ul></div>
+      <div><h3>Top tolerated substitutions</h3><ul id="substitutions"></ul></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Entropy per position</h2>
+    <div class="chart"><canvas id="entropy"></canvas></div>
+  </section>
+
+  <section>
+    <h2>Fraction of deleterious substitutions per position</h2>
+    <div class="chart"><canvas id="fraction"></canvas></div>
+  </section>
+
+  <section>
+    <h2>Substitution log-likelihood ratios</h2>
+    <div class="scroll"><table class="matrix" id="matrix"></table></div>
+    <div class="legend">
+      <span>deleterious</span><span class="ramp"></span><span>tolerated</span>
+      <span id="ramp-range"></span>
+      <span><span class="wt-key"></span> wildtype</span>
+    </div>
+  </section>
+
+  <section>
+    <h2>Per-position summary</h2>
+    <div class="scroll"><table id="summary"></table></div>
+  </section>
+</main>
+
+<script>
+  const data = JSON.parse(document.getElementById("payload").textContent);
+
+  const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  const fixed = (value, digits) => value.toFixed(digits);
+  const signed = (value) => (value >= 0 ? "+" : "") + value.toFixed(3);
+
+  const element = (tag, text, attributes) => {
+    const node = document.createElement(tag);
+    if (text !== undefined) node.textContent = text;
+    for (const [name, value] of Object.entries(attributes || {})) node.setAttribute(name, value);
+    return node;
+  };
+
+  const row = (cells, tag) => {
+    const tr = document.createElement("tr");
+    for (const cell of cells) tr.appendChild(cell instanceof Node ? cell : element(tag || "td", cell));
+    return tr;
+  };
+
+  document.title = data.label + " - mutation report";
+  document.getElementById("title").textContent = data.label;
+  // Positions below are the sub-sequence's own, 1..n - it is what the page is
+  // about. Where it sits in the submitted sequence goes in the header line.
+  const scope = data.length + " residues, " + data.start + "-" + data.stop +
+    " of " + data.full_sequence.length;
+  document.getElementById("meta").innerHTML =
+    scope + " &middot; model " + data.model +
+    " &middot; computed " + data.created_utc + " &middot; <code>" + data.key + "</code>";
+  // The region is shown inside its context, because the context is what the
+  // model conditioned on: the flanks are why these logits mean anything.
+  const flanks = document.getElementById("sequence");
+  flanks.appendChild(element("span", data.full_sequence.slice(0, data.start - 1)));
+  flanks.appendChild(element("mark", data.sequence));
+  flanks.appendChild(element("span", data.full_sequence.slice(data.stop)));
+
+  const bullets = (id, items, digits) => {
+    const list = document.getElementById(id);
+    for (const item of items) {
+      list.appendChild(element("li", item.wt + item.position + " (" + fixed(item.value, digits) + ")"));
+    }
+  };
+  bullets("constrained", data.most_constrained, 3);
+  bullets("tolerant", data.most_tolerant, 3);
+
+  // Only positive-LLR substitutions are worth listing: the ranking is over
+  // every substitution, but a negative score is a predicted loss, not a lead.
+  const tolerated = data.top_substitutions.filter((item) => item.llr > 0);
+  const substitutions = document.getElementById("substitutions");
+  for (const item of tolerated) {
+    substitutions.appendChild(
+      element("li", item.wt + item.position + item.alt + ": " + signed(item.llr) + " nats"));
+  }
+  if (tolerated.length === 0) substitutions.appendChild(element("li", "none"));
+
+  // Matrix: one row per amino acid, one column per position. The cell keeps
+  // its exact value in `title`, so hovering reads out the number the color
+  // only approximates.
+  const matrix = document.getElementById("matrix");
+  matrix.style.setProperty("--matrix-columns", data.length);
+  const head = document.createElement("thead");
+  head.appendChild(row([element("th", "")].concat(
+    data.positions.map((position, index) =>
+      element("th", data.wildtype[index] + position)))));
+  matrix.appendChild(head);
+  const body = document.createElement("tbody");
+  data.amino_acids.forEach((aa, aaIndex) => {
+    const cells = [element("th", aa)];
+    data.positions.forEach((position, index) => {
+      const value = data.llr[index][aaIndex];
+      // Saturating at a percentile rather than the maximum: everything past
+      // the scale is drawn at full color, and the tooltip carries the number.
+      const magnitude = Math.min(Math.abs(value) / data.llr_color_scale, 1);
+      const wildtype = data.wildtype[index] === aa;
+      cells.push(element("td", "", {
+        style: "--t:" + magnitude.toFixed(4),
+        class: (value < 0 ? "deleterious" : "") + (wildtype ? " wildtype" : ""),
+        title: data.wildtype[index] + position + aa + ": " + signed(value) + " nats",
+      }));
+    });
+    body.appendChild(row(cells));
+  });
+  matrix.appendChild(body);
+  document.getElementById("sequence-caption").textContent =
+    "highlighted: residues " + data.start + "-" + data.stop + " (" +
+    data.length + " of " + data.full_sequence.length + ")";
+  document.getElementById("ramp-range").textContent =
+    "full color at +/-" + fixed(data.llr_color_scale, 2) + " nats (" +
+    data.llr_color_percentile + "th percentile; largest " +
+    fixed(data.llr_max_abs, 2) + ")";
+
+  const summary = document.getElementById("summary");
+  const columns = ["position", "wt", "entropy (bits)", "fraction deleterious", "tolerant", "top alt", "top alt LLR"];
+  const summaryHead = document.createElement("thead");
+  summaryHead.appendChild(row(columns, "th"));
+  summary.appendChild(summaryHead);
+  const summaryBody = document.createElement("tbody");
+  data.positions.forEach((position, index) => {
+    summaryBody.appendChild(row([
+      position,
+      data.wildtype[index],
+      fixed(data.entropy[index], 3),
+      fixed(data.deleterious_fraction[index], 3),
+      data.tolerant[index] ? "yes" : "",
+      data.top_alt[index],
+      signed(data.top_alt_llr[index]),
+    ]));
+  });
+  summary.appendChild(summaryBody);
+
+  // Chart colors are read from the CSS variables above, so the two charts and
+  // the matrix stay on one palette; a theme change rebuilds them because
+  // Chart.js bakes the resolved colors into its datasets.
+  let charts = [];
+  const draw = () => {
+    for (const chart of charts) chart.destroy();
+    const ink = css("--muted");
+    const grid = css("--grid");
+    const series = css("--series");
+    const threshold = css("--threshold");
+    const axes = {
+      x: { title: { text: "Position", display: true, color: ink },
+           ticks: { color: ink, autoSkipPadding: 12 }, grid: { display: false } },
+      y: { beginAtZero: true, ticks: { color: ink }, grid: { color: grid } },
+    };
+    const common = {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: "index", intersect: false },
+      plugins: { legend: { labels: { color: ink, boxHeight: 2 } } },
+      // The tables format numbers with a decimal point, so the axes must too:
+      // Chart.js would otherwise follow the browser locale and put "4,0" on an
+      // axis next to "1.782" in the table below it.
+      locale: "en-US",
+    };
+    const reference = (label, values, color) => ({
+      type: "line", label, data: values, borderColor: color, borderWidth: 2,
+      borderDash: [4, 4], pointRadius: 0, fill: false,
+    });
+    const constant = (value) => data.positions.map(() => value);
+
+    charts = [
+      new Chart(document.getElementById("entropy"), {
+        type: "bar",
+        data: {
+          labels: data.positions.map((position, index) => data.wildtype[index] + position),
+          datasets: [
+            { label: "Entropy (bits)", data: data.entropy, backgroundColor: series,
+              borderRadius: 4, borderSkipped: "bottom" },
+          ].concat(data.entropy_references.map((line) =>
+            reference(line.label, constant(line.bits), ink))),
+        },
+        options: { ...common, scales: { ...axes, y: { ...axes.y, title: { text: "Entropy (bits)", display: true, color: ink } } } },
+      }),
+      new Chart(document.getElementById("fraction"), {
+        type: "line",
+        data: {
+          labels: data.positions.map((position, index) => data.wildtype[index] + position),
+          datasets: [
+            { label: "Fraction deleterious", data: data.deleterious_fraction,
+              showLine: false, pointRadius: 4, pointBackgroundColor: series,
+              pointBorderColor: css("--surface"), pointBorderWidth: 2 },
+            reference("threshold " + data.threshold, constant(data.threshold), threshold),
+          ],
+        },
+        options: { ...common, scales: { ...axes, y: { ...axes.y, max: 1, title: { text: "Fraction deleterious (LLR < 0)", display: true, color: ink } } } },
+      }),
+    ];
+  };
+  draw();
+  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", draw);
+</script>
