@@ -25,7 +25,7 @@ official ESM protein language models from EvolutionaryScale/Biohub.
 | --- | --- |
 | `scripts/` | executable entrypoints only; each defines `main()`, which parses and validates parameters and delegates |
 | `esmlab/connectors/` | model backends behind one Protocol in `base.py`, one module per backend, each co-locating its own CLI params |
-| `esmlab/storage.py` | logits persistence: schema, SQLite/PostgreSQL backends, and the storage CLI params every script shares; one database per topic |
+| `esmlab/storage.py` | logits persistence: schema, SQLite/PostgreSQL backends, and the storage CLI params every script shares; one database per topic, entries keyed by the backend and model that produced them |
 | `esmlab/params.py` | `ParamSpec` / `resolve_params` / `load_env`, shared by connectors and storage |
 | `esmlab/seqio.py` | sequence input: both FASTA header formats, validation, the `NamedSequence` record |
 | `esmlab/inference.py` | compute stage: orchestrates a connector and a storage, appends the perf CSV |
@@ -53,7 +53,9 @@ these layers.
   backends: `stub` (deterministic fake logits for tests), `local` (ESMC
   checkpoints on CPU or CUDA), `biohub` (hosted inference, API key required),
   and `modal` (rented GPU). Backend and model are selected in one place;
-  scripts call only the connector interface. Canonical model ids are grouped by
+  scripts call only the connector interface. The two together identify a
+  stored result, so the same model run through two backends is two entries and
+  two reports, comparable side by side. Canonical model ids are grouped by
   task in `connectors/base.py`: `CANONICAL_SEQUENCE_MODELS` (`esmc-300m` /
   `esmc-600m` / `esmc-6b`, masked logits) and `CANONICAL_STRUCTURE_MODELS`
   (`esmfold2` / `esmfold2-fast`, structure prediction — not yet wired to a
@@ -87,7 +89,7 @@ Everything below the script layer is topic-agnostic:
 | --- | --- |
 | `esmlab/inference.py` | compute phase for any topic built on masked logits: orchestrates a connector and a storage |
 | `esmlab/connectors/` | model access |
-| `esmlab/storage.py` | persistence, and which models a consuming phase covers |
+| `esmlab/storage.py` | persistence, and which backend/model pairs a consuming phase covers |
 | `esmlab/params.py`, `esmlab/seqio.py` | CLI parameters, sequence input |
 | `esmlab/distributions.py`, `esmlab/rendering.py` | the distribution every topic reads out, the page mechanism every report is built with |
 
@@ -109,7 +111,8 @@ A topic owns its store: `peptides_logits.py` writes `data/peptides.sqlite` and
 one its topic wrote. The store is therefore the report's scope — a run covers
 what that topic computed and nothing else — and `--sqlite-path` points either
 pair elsewhere. Reports do share one root, `data/reports`, with a directory per
-topic and per model below it: `<out>/<topic>/<model>/<key>.html`.
+topic, backend and model below it:
+`<out>/<topic>/<backend>/<model>/<key>.html`.
 
 Each topic's report stage is split three ways, so nothing in it owns both data
 and files: `*_scoring` derives the numbers, `*_render` turns them into a JSON

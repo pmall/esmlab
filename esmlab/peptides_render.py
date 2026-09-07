@@ -74,6 +74,7 @@ def entry_payload(
     return {
         "key": logits_key(entry.logits.sequence, analysis.start, analysis.stop),
         "label": entry.label,
+        "backend": entry.backend,
         "model": entry.model,
         "created_utc": entry.created_utc,
         "metadata": entry.metadata,
@@ -111,7 +112,7 @@ def entry_payload(
 
 
 def index_payload(entries: list[Payload]) -> Payload:
-    """One model's listing page: a row per rendered entry, newest first.
+    """One run's listing page: a row per rendered entry, newest first.
 
     Takes the entry payloads themselves rather than a separate summary so the
     listing and the pages it links cannot disagree about what was rendered.
@@ -129,7 +130,11 @@ def index_payload(entries: list[Payload]) -> Payload:
         for payload in entries
     ]
     rows.sort(key=lambda row: row["created_utc"], reverse=True)
-    return {"model": entries[0]["model"] if entries else "", "entries": rows}
+    return {
+        "backend": entries[0]["backend"] if entries else "",
+        "model": entries[0]["model"] if entries else "",
+        "entries": rows,
+    }
 
 
 def render_entry(payload: Payload) -> str:

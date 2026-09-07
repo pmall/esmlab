@@ -3,6 +3,7 @@
 import csv
 from pathlib import Path
 
+from esmlab.connectors.stub import StubConnector
 from esmlab.inference import PERF_COLUMNS, InferenceSettings, run_inference
 from esmlab.seqio import NamedSequence, parse_sequences
 from esmlab.storage import open_storage
@@ -49,9 +50,16 @@ def test_run_stores_one_entry_per_sequence(tmp_path: Path) -> None:
 
     assert (stats.n_sequences, stats.computed, stats.skipped) == (1, 1, 0)
     storage = open_storage(settings.storage)
-    assert storage.has(model="esmc-600m", sequence=SEQUENCE, **whole(SEQUENCE)) is True
     assert (
-        storage.load(model="esmc-600m", sequence=SEQUENCE, **whole(SEQUENCE)).label
+        storage.has(
+            backend="stub", model="esmc-600m", sequence=SEQUENCE, **whole(SEQUENCE)
+        )
+        is True
+    )
+    assert (
+        storage.load(
+            backend="stub", model="esmc-600m", sequence=SEQUENCE, **whole(SEQUENCE)
+        ).label
         == "tiny"
     )
 
@@ -64,7 +72,41 @@ def test_second_identical_run_skips_everything(tmp_path: Path) -> None:
     stats = run_inference(settings)
 
     assert (stats.n_sequences, stats.computed, stats.skipped) == (1, 0, 1)
-    assert len(list(open_storage(settings.storage).entries(model="esmc-600m"))) == 1
+    assert (
+        len(
+            list(
+                open_storage(settings.storage).entries(
+                    backend="stub", model="esmc-600m"
+                )
+            )
+        )
+        == 1
+    )
+
+
+def test_a_run_does_not_reuse_another_backends_entries(tmp_path: Path) -> None:
+    """The stage asks storage under its own backend, so another's row is a miss.
+
+    Two backends do not produce the same array, so a store already holding this
+    request under a different one still computes, and both rows survive.
+    """
+    settings = _settings(tmp_path)
+    open_storage(settings.storage).save(
+        StubConnector("esmc-600m").masked_sequence_logits(SEQUENCE, 1, len(SEQUENCE)),
+        backend="local",
+        model="esmc-600m",
+        label="elsewhere",
+        metadata={},
+    )
+
+    stats = run_inference(settings)
+
+    assert (stats.computed, stats.skipped) == (1, 0)
+    storage = open_storage(settings.storage)
+    assert [(run.backend, run.model, run.count) for run in storage.runs()] == [
+        ("local", "esmc-600m", 1),
+        ("stub", "esmc-600m", 1),
+    ]
 
 
 def test_duplicate_sequences_compute_once(tmp_path: Path) -> None:
@@ -80,7 +122,9 @@ def test_duplicate_sequences_compute_once(tmp_path: Path) -> None:
     # The first-seen label wins, since dedup keeps the first occurrence.
     storage = open_storage(settings.storage)
     assert (
-        storage.load(model="esmc-600m", sequence=SEQUENCE, **whole(SEQUENCE)).label
+        storage.load(
+            backend="stub", model="esmc-600m", sequence=SEQUENCE, **whole(SEQUENCE)
+        ).label
         == "first"
     )
 
@@ -96,9 +140,19 @@ def test_distinct_sequences_sharing_a_label_are_both_stored(tmp_path: Path) -> N
 
     assert (stats.n_sequences, stats.computed) == (2, 2)
     storage = open_storage(settings.storage)
-    assert storage.has(model="esmc-600m", sequence=SEQUENCE, **whole(SEQUENCE)) is True
     assert (
-        storage.has(model="esmc-600m", sequence=OTHER_SEQUENCE, **whole(OTHER_SEQUENCE))
+        storage.has(
+            backend="stub", model="esmc-600m", sequence=SEQUENCE, **whole(SEQUENCE)
+        )
+        is True
+    )
+    assert (
+        storage.has(
+            backend="stub",
+            model="esmc-600m",
+            sequence=OTHER_SEQUENCE,
+            **whole(OTHER_SEQUENCE),
+        )
         is True
     )
 
@@ -162,7 +216,7 @@ def test_header_metadata_reaches_storage(tmp_path: Path) -> None:
     run_inference(settings)
 
     stored = open_storage(settings.storage).load(
-        model="esmc-600m", sequence=SEQUENCE, **whole(SEQUENCE)
+        backend="stub", model="esmc-600m", sequence=SEQUENCE, **whole(SEQUENCE)
     )
     assert stored.label == "stat1"
     assert stored.metadata == {"source": "UniProt:P12345", "targets": ["P11111"]}

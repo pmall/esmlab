@@ -51,6 +51,7 @@ def entry_payload(entry: StoredLogits, analysis: SequenceAnalysis) -> Payload:
     return {
         "key": logits_key(entry.logits.sequence, analysis.start, analysis.stop),
         "label": entry.label,
+        "backend": entry.backend,
         "model": entry.model,
         "created_utc": entry.created_utc,
         "metadata": entry.metadata,
@@ -79,7 +80,7 @@ def entry_payload(entry: StoredLogits, analysis: SequenceAnalysis) -> Payload:
 
 
 def index_payload(entries: list[Payload]) -> Payload:
-    """One model's listing page: a row per rendered entry, most constrained first.
+    """One run's listing page: a row per rendered entry, most constrained first.
 
     Sorted by mean entropy rather than by time, because the listing is the
     comparison: reading one sequence against another is the reason to score a
@@ -101,6 +102,7 @@ def index_payload(entries: list[Payload]) -> Payload:
     ]
     rows.sort(key=lambda row: row["mean"])
     return {
+        "backend": entries[0]["backend"] if entries else "",
         "model": entries[0]["model"] if entries else "",
         "entropy_limit": round(ENTROPY_LIMIT, 6),
         "entries": rows,

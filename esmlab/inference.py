@@ -7,6 +7,9 @@ nothing about any of them — it orchestrates a connector and a
 
 Persistence is unconditional: an entry already in storage is skipped, never
 recomputed. That is the whole point of separating this stage from reporting.
+An entry belongs to the backend that produced it, so pointing a second backend
+at the same store computes its own rows beside the first's rather than reading
+them.
 
 A record is scored only at the residues its header named. The whole sequence
 still goes into every forward pass - it is the context that makes the
@@ -158,6 +161,7 @@ def _compute_missing(
         for named in bar:
             bar.set_postfix_str(f"{named.name} L={len(named.sequence)}")
             if storage.has(
+                backend=settings.backend,
                 model=settings.model,
                 sequence=named.sequence,
                 start=named.start,
@@ -182,6 +186,7 @@ def _compute_missing(
             duration = perf_counter() - start
             storage.save(
                 result,
+                backend=settings.backend,
                 model=settings.model,
                 label=named.name,
                 metadata=named.metadata,

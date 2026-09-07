@@ -3,11 +3,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sequence reports</title>
 <!--
-  The listing page for one model's sequence reports, ordered by mean entropy so
-  the table is the comparison between sequences. Rows link to the `<key>.html`
-  pages written beside this file; the payload below is filled in by
-  esmlab.sequences_render. Its twin is peptides_index.html: the two share this
-  skeleton and differ only in the columns their own topic ranks on.
+  The listing page for one backend and model's sequence reports, ordered by
+  mean entropy so the table is the comparison between sequences. Rows link to
+  the `<key>.html` pages written beside this file; the payload below is
+  filled in by esmlab.sequences_render. Its twin is peptides_index.html: the
+  two share this skeleton and differ only in the columns their own topic ranks
+  on.
 -->
 <style>
   :root {
@@ -126,7 +127,8 @@
     return tr;
   };
 
-  const heading = data.model ? "Sequence reports - " + data.model : "Sequence reports";
+  const run = [data.backend, data.model].filter(Boolean).join("/");
+  const heading = run ? "Sequence reports - " + run : "Sequence reports";
   document.title = heading;
   document.getElementById("title").textContent = heading;
   document.getElementById("meta").textContent =

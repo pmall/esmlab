@@ -14,8 +14,8 @@ It reports on every entry the store holds, and the store is the scope: this
 topic writes its own database, so a run covers the sequences that were computed
 into it and nothing else. Reports are located by the sequence's storage key,
 not by its label, and land under this topic's own directory of the shared
-reports root, because a page is named after its entry and the peptide report
-names its pages the same way.
+reports root, in a directory per backend and model, because a page is named
+after its entry and the peptide report names its pages the same way.
 """
 
 from dataclasses import dataclass
@@ -29,7 +29,7 @@ from esmlab.sequences_render import (
     render_index,
 )
 from esmlab.sequences_scoring import analyze
-from esmlab.storage import StorageSettings, open_storage, select_models
+from esmlab.storage import StorageSettings, open_storage, select_runs
 
 INDEX_FILE = "index.html"
 
@@ -43,12 +43,13 @@ TOPIC = "sequences"
 class ReportSettings:
     """Fully-resolved configuration for one :func:`run_report` invocation.
 
-    Built by the ``sequences_report`` script. ``model`` narrows the run to one
-    model's entries, and ``None`` reports every model the store holds;
-    ``window`` is a pure presentation knob, free to change without touching the
-    model.
+    Built by the ``sequences_report`` script. ``backend`` and ``model`` narrow
+    the run to the entries one backend produced for one model, and ``None`` on
+    either reports every value the store holds; ``window`` is a pure
+    presentation knob, free to change without touching the model.
     """
 
+    backend: str | None
     model: str | None
     storage: StorageSettings
     out_dir: Path
@@ -60,10 +61,11 @@ def run_report(settings: ReportSettings) -> list[Path]:
 
     Iterates the storage rather than an input file: the store is the source of
     truth for what has been computed. Each entry lands at
-    ``<out_dir>/sequences/<model>/<key>.html`` - the model is in the path because
-    the storage key is the sequence's alone, so two models would otherwise
-    overwrite each other - beside an ``index.html`` listing that model's pages
-    by mean entropy. Returns the list of written artifact paths.
+    ``<out_dir>/sequences/<backend>/<model>/<key>.html`` - what produced the
+    entry is in the path because the storage key is the sequence's alone, so
+    one sequence scored by two backends or two models would otherwise overwrite
+    itself - beside an ``index.html`` listing that run's pages by mean entropy.
+    Returns the list of written artifact paths.
 
     Raises :class:`ValueError` when the selection matches no stored entry,
     rather than leaving an empty report directory behind.
@@ -71,25 +73,26 @@ def run_report(settings: ReportSettings) -> list[Path]:
     storage = open_storage(settings.storage)
 
     artifacts: list[Path] = []
-    for model in select_models(storage, settings.model):
-        model_dir = settings.out_dir / TOPIC / model
-        model_dir.mkdir(parents=True, exist_ok=True)
+    for run in select_runs(storage, backend=settings.backend, model=settings.model):
+        run_dir = settings.out_dir / TOPIC / run.backend / run.model
+        run_dir.mkdir(parents=True, exist_ok=True)
 
         payloads: list[Payload] = []
-        for entry in storage.entries(model=model):
+        for entry in storage.entries(backend=run.backend, model=run.model):
             payload = entry_payload(
                 entry, analyze(entry.logits, window=settings.window)
             )
             payloads.append(payload)
-            page_path = model_dir / f"{payload['key']}.html"
+            page_path = run_dir / f"{payload['key']}.html"
             page_path.write_text(render_entry(payload))
             artifacts.append(page_path)
             print(
-                f"  {model} {entry.label} ({payload['length']} residues, "
+                f"  {run.backend}/{run.model} {entry.label} "
+                f"({payload['length']} residues, "
                 f"mean {payload['summary']['mean']:.3f} bits) -> {page_path}"
             )
 
-        index_path = model_dir / INDEX_FILE
+        index_path = run_dir / INDEX_FILE
         index_path.write_text(render_index(index_payload(payloads)))
         artifacts.append(index_path)
 

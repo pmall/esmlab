@@ -1,4 +1,4 @@
-"""Persistence of computed masked-logits, keyed by ``(model, sequence, region)``.
+"""Persistence of computed masked-logits, keyed by ``(backend, model, sequence, region)``.
 
 Storage is a layer of its own: connectors compute logits and never persist
 them, and this module persists logits and never computes them. Callers
@@ -12,19 +12,22 @@ asking which models have scored a sequence.
 
 Schema
 ------
-One ``sequence_logits`` table, primary key ``(model, sequence_key)``.
+One ``sequence_logits`` table, primary key ``(backend, model, sequence_key)``.
 
 - **The key is a digest, not the sequence.** Sequences run to thousands of
   residues, so the key column is
   ``sequence_key = blake2b(sequence, start, stop)`` and the sequence itself is a
   regular column that is never compared. The digest covers the sequence and the
-  scored region, which keeps ``model`` a free-standing key column: one request
-  has one key under every model, so ``WHERE sequence_key = ...`` answers which
-  models have scored it. The same residues inside two different sequences are
-  two rows, because the context differs and so do the logits. The *backend* is
-  deliberately absent — logits for a given ``(model, sequence, region)`` are the
-  same artifact whichever backend produced them, so a Modal run's results serve
-  a later local run.
+  scored region, which keeps ``backend`` and ``model`` free-standing key
+  columns: one request has one key under every pair of them, so ``WHERE
+  sequence_key = ...`` answers which backends and models have scored it. The
+  same residues inside two different sequences are two rows, because the
+  context differs and so do the logits.
+- **The backend is identity, not a note kept beside it.** One model run through
+  two backends does not produce one array: the local backend runs bfloat16 on
+  CUDA and full precision on CPU, and each hosted backend runs its own. Keying
+  on it keeps both rows, so a model's backends can be read against each other,
+  and so a ``stub`` run answers for nothing but itself.
 - **Logits are a raw C-order float32 blob** with ``n_positions`` / ``n_tokens``
   in their own columns, so a read is a reshape rather than a deserialization
   and :meth:`has` never transfers the blob at all. The vocab is JSON text.
@@ -42,9 +45,6 @@ scope: two stores pointed at the same database are the same store, and a store
 holds exactly the entries some run put there. That is what makes a store the
 unit a topic reports on - each topic keeps its own database, named by the
 script that writes it, so a report covers that topic's runs and nothing else.
-A ``stub`` run needs its own database too (``--sqlite-path
-data/logits-stub.sqlite3``), or its fake logits will be served to a later real
-run. No backend is special-cased in code.
 
 Writes are a single upsert, which both engines speak, so a recompute replaces
 the row and there is no state in which a later run sees a half-written entry
@@ -54,8 +54,8 @@ migration step.
 :class:`LogitsStorage` is the Protocol; :class:`SqliteLogitsStorage` and
 :class:`PostgresLogitsStorage` are the implementations, sharing everything but
 paramstyle, blob type and connection setup via :class:`_SqlLogitsStorage`.
-:func:`select_models` is where every consuming stage agrees on which of the
-store's models one run covers.
+:func:`select_runs` is where every consuming stage agrees on which of the
+store's backend/model pairs one run covers.
 """
 
 import argparse
@@ -107,7 +107,7 @@ def sqlite_params(default: Path) -> tuple[ParamSpec, ...]:
             default=default,
             help=(
                 f"SQLite database file (default: {default}). "
-                "Use a separate one for stub runs; the database is the only scope."
+                "The database is the only scope a report has."
             ),
         ),
     )
@@ -164,6 +164,10 @@ def storage_params(sqlite_default: Path) -> dict[str, tuple[ParamSpec, ...]]:
 class StoredLogits:
     """One persisted logits entry: the result plus its provenance.
 
+    ``backend`` and ``model`` are the two halves of what produced the array,
+    and both are key columns: the same model reached through two backends is
+    two entries.
+
     ``label`` is a display string carried alongside the entry (the sanitized
     FASTA header the sequence first arrived under). It is data, never identity:
     nothing looks an entry up by it, and two entries may share one.
@@ -174,6 +178,7 @@ class StoredLogits:
     works, while metadata carries whatever structure the analysis needs.
     """
 
+    backend: str
     model: str
     label: str
     metadata: Metadata
@@ -181,14 +186,29 @@ class StoredLogits:
     logits: SequenceLogits
 
 
+@dataclass(frozen=True)
+class StoredRun:
+    """One backend/model pair a store holds, and how many entries it holds for it.
+
+    The unit a consuming stage iterates: entries are grouped by what produced
+    them, so a report covers one backend's view of one model and says which in
+    its own path.
+    """
+
+    backend: str
+    model: str
+    count: int
+
+
 def logits_key(sequence: str, start: int, stop: int) -> str:
-    """Content-addressed key for one scored request, the second half of the PK.
+    """Content-addressed key for one scored request, the last part of the PK.
 
     Sequences run to thousands of residues, so the row is keyed by a fixed-size
     digest rather than the sequence itself; the sequence is stored in its own
-    column and never compared. Hashing keeps ``model`` a free-standing key
-    column, so one request has one key across every model and a single
-    ``WHERE sequence_key = ?`` answers which models have scored it.
+    column and never compared. Hashing keeps ``backend`` and ``model``
+    free-standing key columns, so one request has one key across every pair of
+    them and a single ``WHERE sequence_key = ?`` answers which backends and
+    models have scored it.
 
     The digest is over the whole submitted sequence plus the region, which is
     what makes the same residues read out of two different sequences two
@@ -210,11 +230,15 @@ class LogitsStorage(Protocol):
     identically, so callers never branch on which one they hold.
     """
 
-    def has(self, *, model: str, sequence: str, start: int, stop: int) -> bool:
+    def has(
+        self, *, backend: str, model: str, sequence: str, start: int, stop: int
+    ) -> bool:
         """Whether an entry exists, without transferring the logits blob."""
         ...
 
-    def load(self, *, model: str, sequence: str, start: int, stop: int) -> StoredLogits:
+    def load(
+        self, *, backend: str, model: str, sequence: str, start: int, stop: int
+    ) -> StoredLogits:
         """Returns the stored entry; raises :class:`KeyError` when absent."""
         ...
 
@@ -222,19 +246,20 @@ class LogitsStorage(Protocol):
         self,
         result: SequenceLogits,
         *,
+        backend: str,
         model: str,
         label: str,
         metadata: Metadata,
     ) -> None:
-        """Persists ``result`` under ``(model, sequence, region)``."""
+        """Persists ``result`` under ``(backend, model, sequence, region)``."""
         ...
 
-    def entries(self, *, model: str) -> Iterator[StoredLogits]:
-        """Yields every stored entry for ``model``, ordered by sequence key."""
+    def entries(self, *, backend: str, model: str) -> Iterator[StoredLogits]:
+        """Yields one run's stored entries, ordered by sequence key."""
         ...
 
-    def models(self) -> list[tuple[str, int]]:
-        """Every model the store holds, with its entry count, by model name."""
+    def runs(self) -> list[StoredRun]:
+        """Every backend/model pair the store holds, with its entry count."""
         ...
 
 
@@ -310,6 +335,7 @@ class _SqlLogitsStorage:
         self._execute(
             f"""
             CREATE TABLE IF NOT EXISTS {TABLE} (
+                backend TEXT NOT NULL,
                 model TEXT NOT NULL,
                 sequence_key TEXT NOT NULL,
                 sequence TEXT NOT NULL,
@@ -322,33 +348,40 @@ class _SqlLogitsStorage:
                 n_tokens INTEGER NOT NULL,
                 vocab TEXT NOT NULL,
                 logits {self._blob_type} NOT NULL,
-                PRIMARY KEY (model, sequence_key)
+                PRIMARY KEY (backend, model, sequence_key)
             )
             """
         )
 
-    def has(self, *, model: str, sequence: str, start: int, stop: int) -> bool:
+    def has(
+        self, *, backend: str, model: str, sequence: str, start: int, stop: int
+    ) -> bool:
         """Whether the row exists, selecting a constant so the blob stays in the database."""
         rows = self._execute(
-            f"SELECT 1 FROM {TABLE} WHERE model = ? AND sequence_key = ?",
-            (model, logits_key(sequence, start, stop)),
+            f"SELECT 1 FROM {TABLE} "
+            "WHERE backend = ? AND model = ? AND sequence_key = ?",
+            (backend, model, logits_key(sequence, start, stop)),
         )
         return bool(rows)
 
-    def load(self, *, model: str, sequence: str, start: int, stop: int) -> StoredLogits:
+    def load(
+        self, *, backend: str, model: str, sequence: str, start: int, stop: int
+    ) -> StoredLogits:
         """Rehydrates the stored entry, raising :class:`KeyError` when absent."""
         rows = self._execute(
-            f"{_SELECT_COLUMNS} FROM {TABLE} WHERE model = ? AND sequence_key = ?",
-            (model, logits_key(sequence, start, stop)),
+            f"{_SELECT_COLUMNS} FROM {TABLE} "
+            "WHERE backend = ? AND model = ? AND sequence_key = ?",
+            (backend, model, logits_key(sequence, start, stop)),
         )
         if not rows:
-            raise KeyError(f"No stored logits for {model!r} and this sequence")
+            raise KeyError(f"No stored logits for {backend}/{model} and this sequence")
         return _row_to_stored(rows[0])
 
     def save(
         self,
         result: SequenceLogits,
         *,
+        backend: str,
         model: str,
         label: str,
         metadata: Metadata,
@@ -363,11 +396,12 @@ class _SqlLogitsStorage:
         self._execute(
             f"""
             INSERT INTO {TABLE} (
-                model, sequence_key, sequence, label, metadata, created_utc,
-                region_start, region_stop, n_positions, n_tokens, vocab, logits
+                backend, model, sequence_key, sequence, label, metadata,
+                created_utc, region_start, region_stop, n_positions, n_tokens,
+                vocab, logits
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT (model, sequence_key) DO UPDATE SET
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (backend, model, sequence_key) DO UPDATE SET
                 sequence = EXCLUDED.sequence,
                 label = EXCLUDED.label,
                 metadata = EXCLUDED.metadata,
@@ -380,6 +414,7 @@ class _SqlLogitsStorage:
                 logits = EXCLUDED.logits
             """,
             (
+                backend,
                 model,
                 logits_key(result.sequence, result.start, result.stop),
                 result.sequence,
@@ -395,27 +430,32 @@ class _SqlLogitsStorage:
             ),
         )
 
-    def entries(self, *, model: str) -> Iterator[StoredLogits]:
-        """Yields every entry for ``model``; a model never written to yields nothing."""
+    def entries(self, *, backend: str, model: str) -> Iterator[StoredLogits]:
+        """Yields one run's entries; a pair never written to yields nothing."""
         rows = self._execute(
-            f"{_SELECT_COLUMNS} FROM {TABLE} WHERE model = ? ORDER BY sequence_key",
-            (model,),
+            f"{_SELECT_COLUMNS} FROM {TABLE} "
+            "WHERE backend = ? AND model = ? ORDER BY sequence_key",
+            (backend, model),
         )
         for row in rows:
             yield _row_to_stored(row)
 
-    def models(self) -> list[tuple[str, int]]:
-        """Every model the store holds, with its entry count, by model name.
+    def runs(self) -> list[StoredRun]:
+        """Every backend/model pair the store holds, with its entry count.
 
-        The store is keyed by ``(model, sequence)`` and nothing else records
-        which models have been computed, so this is how a caller tells "no
-        entries for this model" apart from "an empty store".
+        The store is keyed by ``(backend, model, sequence)`` and nothing else
+        records what has been computed, so this is how a caller tells "no
+        entries for this pair" apart from "an empty store".
         """
         rows = self._execute(
-            f"SELECT model, COUNT(*) FROM {TABLE} GROUP BY model ORDER BY model"
+            f"SELECT backend, model, COUNT(*) FROM {TABLE} "
+            "GROUP BY backend, model ORDER BY backend, model"
         )
-        # The driver types every column as ``object``; both are known here.
-        return [(str(row[0]), int(row[1])) for row in rows]  # type: ignore[arg-type]
+        # The driver types every column as ``object``; all three are known here.
+        return [
+            StoredRun(backend=str(row[0]), model=str(row[1]), count=int(row[2]))  # type: ignore[arg-type]
+            for row in rows
+        ]
 
 
 class SqliteLogitsStorage(_SqlLogitsStorage):
@@ -460,7 +500,7 @@ class PostgresLogitsStorage(_SqlLogitsStorage):
 
 
 _SELECT_COLUMNS: LiteralString = """SELECT
-    model, sequence, label, metadata, created_utc,
+    backend, model, sequence, label, metadata, created_utc,
     region_start, region_stop, n_positions, n_tokens, vocab, logits"""
 
 
@@ -472,6 +512,7 @@ def _row_to_stored(row: Row) -> StoredLogits:
     ``frombuffer`` yields a read-only view over memory the driver owns.
     """
     (
+        backend,
         model,
         sequence,
         label,
@@ -490,6 +531,7 @@ def _row_to_stored(row: Row) -> StoredLogits:
         .copy()
     )
     return StoredLogits(
+        backend=str(backend),
         model=str(model),
         label=str(label),
         metadata=json.loads(str(metadata)),
@@ -635,32 +677,48 @@ def open_storage(settings: StorageSettings) -> LogitsStorage:
             )
 
 
-def select_models(storage: LogitsStorage, model: str | None) -> list[str]:
-    """Which models a consuming stage runs over, or a :class:`ValueError` saying why none.
+def select_runs(
+    storage: LogitsStorage, *, backend: str | None, model: str | None
+) -> list[StoredRun]:
+    """Which of the store's runs a consuming stage covers, or a :class:`ValueError` saying why none.
 
-    ``None`` means every model the store holds: consuming a store costs no
-    model time, so the useful default is "everything you have". Asking for a
-    model with nothing stored is still an error, since it is almost always a
-    compute run that used a different one, and the message names what the store
-    does hold because the useful next command is the same one with a different
-    ``--model`` or with none at all.
+    ``None`` on either side means every value the store holds: consuming a
+    store costs no model time, so the useful default is "everything you have".
+    Asking for a backend or a model with nothing stored is still an error,
+    since it is almost always a compute run that used a different one, and the
+    message names what the store does hold because the useful next command is
+    the same one with a different selection or with none at all.
 
     Shared by every report topic, so they agree on the default and fail
     identically.
     """
-    stored = storage.models()
+    stored = storage.runs()
     if not stored:
         raise ValueError(
             "Storage holds no entries at all, so there is nothing to report"
         )
 
-    names = [name for name, _ in stored]
-    if model is None:
-        return names
-    if model not in names:
-        held = ", ".join(f"{name} ({count})" for name, count in stored)
+    selected = [
+        run
+        for run in stored
+        if (backend is None or run.backend == backend)
+        and (model is None or run.model == model)
+    ]
+    if not selected:
+        held = ", ".join(f"{run.backend}/{run.model} ({run.count})" for run in stored)
         raise ValueError(
-            f"Storage holds no entries for model {model!r}; it holds: {held}. "
-            f"Re-run with a --model it holds, or without --model for all of them."
+            f"Storage holds no entries for {_asked_for(backend, model)}; "
+            f"it holds: {held}. Re-run with a --backend and --model it holds, "
+            f"or with neither for all of them."
         )
-    return [model]
+    return selected
+
+
+def _asked_for(backend: str | None, model: str | None) -> str:
+    """Names the selection that matched nothing, for :func:`select_runs`'s message."""
+    asked = [
+        f"{name} {value!r}"
+        for name, value in (("backend", backend), ("model", model))
+        if value is not None
+    ]
+    return " and ".join(asked)

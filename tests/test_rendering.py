@@ -25,6 +25,7 @@ SHARED_ROW_KEYS = {
 def _entry(label: str = "tiny") -> StoredLogits:
     """One stored entry both topics can be asked to render."""
     return StoredLogits(
+        backend="stub",
         model="esmc-600m",
         label=label,
         metadata={},

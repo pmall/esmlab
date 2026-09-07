@@ -246,7 +246,7 @@
   const scope = data.length + " residues, " + data.start + "-" + data.stop +
     " of " + data.full_sequence.length;
   document.getElementById("meta").innerHTML =
-    scope + " &middot; model " + data.model +
+    scope + " &middot; " + data.backend + "/" + data.model +
     " &middot; computed " + when(data.created_utc) + " &middot; <code>" + data.key + "</code>";
   // The region is shown inside its context, because the context is what the
   // model conditioned on: the flanks are why these logits mean anything.

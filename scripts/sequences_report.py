@@ -12,25 +12,26 @@ the peptide report it needs no wildtype column, so it carries one number per
 position and no substitution matrix, which is what keeps it readable for a
 whole protein. Each page draws the entropy track with a rolling mean over
 ``--window`` positions, the distribution of those entropies, the extreme
-positions at both ends, and a per-position table; the index ranks the model's
+positions at both ends, and a per-position table; the index ranks a run's
 sequences by mean entropy, which is the comparison the topic exists for.
 
 It iterates the storage rather than an input file — the store is the source of
-truth for what this topic has computed — and renders every entry held for
-``--model``. The store is the scope: a run reports on the sequences in
-``--sqlite-path`` and on nothing else.
+truth for what this topic has computed — and renders every entry held for the
+selected ``--backend`` and ``--model``. The store is the scope: a run reports on
+the sequences in ``--sqlite-path`` and on nothing else.
 
-Where it writes: ``<out>/sequences/<model>/<key>.html``, one self-contained page
-per entry, beside that model's ``index.html``. ``--out`` is the reports root
-every topic shares (default ``data/reports``); the topic and the model are in
-the path below it because a page is named after the entry's storage digest
-alone, so neither another topic nor another model may share a directory with
-it. Open a model's ``index.html`` to read a run; a page needs a network
-connection the first time, for the charting library it loads from a CDN.
+Where it writes: ``<out>/sequences/<backend>/<model>/<key>.html``, one
+self-contained page per entry, beside that run's ``index.html``. ``--out`` is
+the reports root every topic shares (default ``data/reports``); the topic, the
+backend and the model are in the path below it because a page is named after
+the entry's storage digest alone, so nothing else may share a directory with
+it. Open a run's ``index.html`` to read it; a page needs a network connection
+the first time, for the charting library it loads from a CDN.
 
-``--model`` is optional: the default renders every model the store holds, since
-reporting costs no model time. Naming a model with nothing stored is a CLI
-error listing the models that do have entries.
+``--backend`` and ``--model`` are both optional: the default renders every
+backend and model the store holds, since reporting costs no model time. Naming
+a pair with nothing stored is a CLI error listing the pairs that do have
+entries.
 
 Takes the same storage flags as ``sequences_logits.py``, and reads by default
 the same ``data/sequences.sqlite`` it writes.
@@ -40,6 +41,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from esmlab.connectors import BACKENDS
 from esmlab.connectors.base import CANONICAL_SEQUENCE_MODELS
 from esmlab.params import load_env
 from esmlab.sequences_report import ReportSettings, run_report
@@ -57,13 +59,20 @@ DEFAULT_WINDOW = 9
 def _build_parser() -> argparse.ArgumentParser:
     """Builds the argparse parser.
 
-    No backend flags and no model credentials: this stage reads stored arrays
-    and never constructs a connector. The storage flags are the same ones the
-    compute scripts declare, so a run's printed command line is copyable.
+    No model credentials, and ``--backend`` here selects stored entries rather
+    than a connector: this stage reads stored arrays and never runs a model.
+    The storage flags are the same ones the compute scripts declare, so a run's
+    printed command line is copyable.
     """
     # argparse takes the summary line only: the rest of the module docstring
     # is for someone reading the file, and would swamp --help.
     parser = argparse.ArgumentParser(description=SUMMARY)
+    parser.add_argument(
+        "--backend",
+        choices=BACKENDS,
+        default=None,
+        help="Report only on entries this backend computed (default: every backend)",
+    )
     parser.add_argument(
         "--model",
         choices=CANONICAL_SEQUENCE_MODELS,
@@ -100,6 +109,7 @@ def _report(args: argparse.Namespace) -> int:
     if args.window < 1:
         raise ValueError("--window must be at least 1 position")
     settings = ReportSettings(
+        backend=args.backend,
         model=args.model,
         storage=storage_settings(args, sqlite_default=SQLITE_PATH),
         out_dir=args.out,

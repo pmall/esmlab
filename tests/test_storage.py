@@ -18,6 +18,7 @@ from esmlab.connectors.stub import StubConnector
 from esmlab.storage import (
     TABLE,
     SqliteLogitsStorage,
+    StoredRun,
     logits_key,
 )
 from tests.fixtures import whole
@@ -46,9 +47,16 @@ def test_missing_entry_is_absent_and_load_raises(tmp_path: Path) -> None:
     """An unwritten entry reports absent and refuses to load."""
     storage = _storage(tmp_path)
 
-    assert storage.has(model="esmc-600m", sequence=SEQUENCE, **whole(SEQUENCE)) is False
+    assert (
+        storage.has(
+            backend="stub", model="esmc-600m", sequence=SEQUENCE, **whole(SEQUENCE)
+        )
+        is False
+    )
     with pytest.raises(KeyError):
-        storage.load(model="esmc-600m", sequence=SEQUENCE, **whole(SEQUENCE))
+        storage.load(
+            backend="stub", model="esmc-600m", sequence=SEQUENCE, **whole(SEQUENCE)
+        )
 
 
 def test_save_then_load_round_trips_result_and_provenance(tmp_path: Path) -> None:
@@ -56,11 +64,20 @@ def test_save_then_load_round_trips_result_and_provenance(tmp_path: Path) -> Non
     storage = _storage(tmp_path)
     result = _result()
 
-    storage.save(result, model="esmc-600m", label="stat1", metadata=METADATA)
+    storage.save(
+        result, backend="stub", model="esmc-600m", label="stat1", metadata=METADATA
+    )
 
-    assert storage.has(model="esmc-600m", sequence=SEQUENCE, **whole(SEQUENCE)) is True
-    stored = storage.load(model="esmc-600m", sequence=SEQUENCE, **whole(SEQUENCE))
-    assert stored.model == "esmc-600m"
+    assert (
+        storage.has(
+            backend="stub", model="esmc-600m", sequence=SEQUENCE, **whole(SEQUENCE)
+        )
+        is True
+    )
+    stored = storage.load(
+        backend="stub", model="esmc-600m", sequence=SEQUENCE, **whole(SEQUENCE)
+    )
+    assert (stored.backend, stored.model) == ("stub", "esmc-600m")
     assert stored.label == "stat1"
     assert stored.metadata == METADATA
     assert stored.created_utc
@@ -76,10 +93,10 @@ def test_loaded_logits_are_writable(tmp_path: Path) -> None:
     decode copies precisely so a caller never hits that.
     """
     storage = _storage(tmp_path)
-    storage.save(_result(), model="esmc-600m", label="a", metadata={})
+    storage.save(_result(), backend="stub", model="esmc-600m", label="a", metadata={})
 
     logits = storage.load(
-        model="esmc-600m", sequence=SEQUENCE, **whole(SEQUENCE)
+        backend="stub", model="esmc-600m", sequence=SEQUENCE, **whole(SEQUENCE)
     ).logits.logits
     logits[0, 0] = 1.0
 
@@ -87,7 +104,7 @@ def test_loaded_logits_are_writable(tmp_path: Path) -> None:
 
 
 def test_key_depends_on_sequence_alone(tmp_path: Path) -> None:
-    """The digest is the sequence's; ``model`` is a free-standing key column."""
+    """The digest is the sequence's; ``backend`` and ``model`` are free-standing."""
     assert logits_key(SEQUENCE, 1, len(SEQUENCE)) == logits_key(
         SEQUENCE, 1, len(SEQUENCE)
     )
@@ -97,8 +114,8 @@ def test_key_depends_on_sequence_alone(tmp_path: Path) -> None:
 
     path = tmp_path / "logits.sqlite3"
     storage = SqliteLogitsStorage(path)
-    storage.save(_result(), model="esmc-600m", label="a", metadata={})
-    storage.save(_result(), model="esmc-300m", label="a", metadata={})
+    storage.save(_result(), backend="stub", model="esmc-600m", label="a", metadata={})
+    storage.save(_result(), backend="stub", model="esmc-300m", label="a", metadata={})
 
     # One sequence has one key everywhere, so a single row scan answers
     # which models have scored it.
@@ -110,13 +127,56 @@ def test_key_depends_on_sequence_alone(tmp_path: Path) -> None:
     assert [row[0] for row in models] == ["esmc-300m", "esmc-600m"]
 
 
+def test_two_backends_keep_separate_rows_for_one_request(tmp_path: Path) -> None:
+    """One model reached through two backends is two entries, not one.
+
+    The backends do not compute the same array - precision and hardware differ -
+    so neither may answer for the other, and both stay readable side by side.
+    """
+    path = tmp_path / "logits.sqlite3"
+    storage = SqliteLogitsStorage(path)
+    storage.save(
+        _result(), backend="stub", model="esmc-600m", label="fake", metadata={}
+    )
+    storage.save(
+        _result(), backend="local", model="esmc-600m", label="real", metadata={}
+    )
+
+    with sqlite3.connect(path) as connection:
+        count = connection.execute(f"SELECT COUNT(*) FROM {TABLE}").fetchone()[0]
+    assert count == 2
+    for backend, label in (("stub", "fake"), ("local", "real")):
+        stored = storage.load(
+            backend=backend, model="esmc-600m", sequence=SEQUENCE, **whole(SEQUENCE)
+        )
+        assert (stored.backend, stored.label) == (backend, label)
+
+
+def test_an_entry_never_answers_for_another_backend(tmp_path: Path) -> None:
+    """A stored request is a miss under a backend that has not computed it."""
+    storage = _storage(tmp_path)
+    storage.save(_result(), backend="stub", model="esmc-600m", label="a", metadata={})
+
+    assert (
+        storage.has(
+            backend="local", model="esmc-600m", sequence=SEQUENCE, **whole(SEQUENCE)
+        )
+        is False
+    )
+
+
 def test_entry_for_a_different_sequence_is_separate(tmp_path: Path) -> None:
     """Distinct sequences never share a row under the same model."""
     storage = _storage(tmp_path)
-    storage.save(_result(), model="esmc-600m", label="a", metadata={})
+    storage.save(_result(), backend="stub", model="esmc-600m", label="a", metadata={})
 
     assert (
-        storage.has(model="esmc-600m", sequence=OTHER_SEQUENCE, **whole(OTHER_SEQUENCE))
+        storage.has(
+            backend="stub",
+            model="esmc-600m",
+            sequence=OTHER_SEQUENCE,
+            **whole(OTHER_SEQUENCE),
+        )
         is False
     )
 
@@ -125,14 +185,20 @@ def test_saving_twice_upserts_in_place(tmp_path: Path) -> None:
     """A recompute lands on the same row rather than inserting a duplicate."""
     path = tmp_path / "logits.sqlite3"
     storage = SqliteLogitsStorage(path)
-    storage.save(_result(), model="esmc-600m", label="first", metadata={})
-    storage.save(_result(), model="esmc-600m", label="second", metadata={})
+    storage.save(
+        _result(), backend="stub", model="esmc-600m", label="first", metadata={}
+    )
+    storage.save(
+        _result(), backend="stub", model="esmc-600m", label="second", metadata={}
+    )
 
     with sqlite3.connect(path) as connection:
         count = connection.execute(f"SELECT COUNT(*) FROM {TABLE}").fetchone()[0]
     assert count == 1
     assert (
-        storage.load(model="esmc-600m", sequence=SEQUENCE, **whole(SEQUENCE)).label
+        storage.load(
+            backend="stub", model="esmc-600m", sequence=SEQUENCE, **whole(SEQUENCE)
+        ).label
         == "second"
     )
 
@@ -141,7 +207,7 @@ def test_row_holds_provenance_and_the_decoded_shape(tmp_path: Path) -> None:
     """The row describes the entry; the blob's shape lives in its own columns."""
     path = tmp_path / "logits.sqlite3"
     SqliteLogitsStorage(path).save(
-        _result(), model="esmc-600m", label="stat1", metadata=METADATA
+        _result(), backend="stub", model="esmc-600m", label="stat1", metadata=METADATA
     )
 
     with sqlite3.connect(path) as connection:
@@ -149,6 +215,7 @@ def test_row_holds_provenance_and_the_decoded_shape(tmp_path: Path) -> None:
         row = connection.execute(f"SELECT * FROM {TABLE}").fetchone()
 
     assert set(row.keys()) == {
+        "backend",
         "model",
         "sequence_key",
         "sequence",
@@ -162,7 +229,7 @@ def test_row_holds_provenance_and_the_decoded_shape(tmp_path: Path) -> None:
         "vocab",
         "logits",
     }
-    assert row["model"] == "esmc-600m"
+    assert (row["backend"], row["model"]) == ("stub", "esmc-600m")
     # The label stays a plain string, so WHERE label = 'stat1' still works.
     assert row["label"] == "stat1"
     assert json.loads(row["metadata"]) == METADATA
@@ -189,15 +256,25 @@ def test_a_region_is_a_separate_row_from_the_whole_sequence(tmp_path: Path) -> N
         logits=everything.logits[2:5],
         vocab=everything.vocab,
     )
-    storage.save(everything, model="esmc-600m", label="whole", metadata={})
-    storage.save(window, model="esmc-600m", label="window", metadata={})
+    storage.save(
+        everything, backend="stub", model="esmc-600m", label="whole", metadata={}
+    )
+    storage.save(window, backend="stub", model="esmc-600m", label="window", metadata={})
 
     assert logits_key(SEQUENCE, 1, len(SEQUENCE)) != logits_key(SEQUENCE, 3, 5)
-    assert storage.has(model="esmc-600m", sequence=SEQUENCE, **whole(SEQUENCE))
-    assert storage.has(model="esmc-600m", sequence=SEQUENCE, start=3, stop=5)
-    assert not storage.has(model="esmc-600m", sequence=SEQUENCE, start=1, stop=2)
+    assert storage.has(
+        backend="stub", model="esmc-600m", sequence=SEQUENCE, **whole(SEQUENCE)
+    )
+    assert storage.has(
+        backend="stub", model="esmc-600m", sequence=SEQUENCE, start=3, stop=5
+    )
+    assert not storage.has(
+        backend="stub", model="esmc-600m", sequence=SEQUENCE, start=1, stop=2
+    )
 
-    loaded = storage.load(model="esmc-600m", sequence=SEQUENCE, start=3, stop=5)
+    loaded = storage.load(
+        backend="stub", model="esmc-600m", sequence=SEQUENCE, start=3, stop=5
+    )
     assert loaded.label == "window"
     assert (loaded.logits.start, loaded.logits.stop) == (3, 5)
     assert loaded.logits.sequence == SEQUENCE
@@ -207,11 +284,13 @@ def test_a_region_is_a_separate_row_from_the_whole_sequence(tmp_path: Path) -> N
 def test_a_second_store_on_the_same_file_sees_the_same_rows(tmp_path: Path) -> None:
     """The database is the only scope: two stores on one file are one store."""
     path = tmp_path / "logits.sqlite3"
-    SqliteLogitsStorage(path).save(_result(), model="esmc-600m", label="a", metadata={})
+    SqliteLogitsStorage(path).save(
+        _result(), backend="stub", model="esmc-600m", label="a", metadata={}
+    )
 
     assert (
         SqliteLogitsStorage(path).has(
-            model="esmc-600m", sequence=SEQUENCE, **whole(SEQUENCE)
+            backend="stub", model="esmc-600m", sequence=SEQUENCE, **whole(SEQUENCE)
         )
         is True
     )
@@ -220,37 +299,58 @@ def test_a_second_store_on_the_same_file_sees_the_same_rows(tmp_path: Path) -> N
 def test_entries_yields_only_the_requested_model(tmp_path: Path) -> None:
     """Enumeration is per-model."""
     storage = _storage(tmp_path)
-    storage.save(_result(), model="esmc-600m", label="a", metadata={})
-    storage.save(_result(OTHER_SEQUENCE), model="esmc-600m", label="b", metadata={})
-    storage.save(_result(), model="esmc-300m", label="c", metadata={})
+    storage.save(_result(), backend="stub", model="esmc-600m", label="a", metadata={})
+    storage.save(
+        _result(OTHER_SEQUENCE),
+        backend="stub",
+        model="esmc-600m",
+        label="b",
+        metadata={},
+    )
+    storage.save(_result(), backend="stub", model="esmc-300m", label="c", metadata={})
 
-    labels = sorted(entry.label for entry in storage.entries(model="esmc-600m"))
+    labels = sorted(
+        entry.label for entry in storage.entries(backend="stub", model="esmc-600m")
+    )
     assert labels == ["a", "b"]
-    assert [entry.label for entry in storage.entries(model="esmc-300m")] == ["c"]
+    assert [
+        entry.label for entry in storage.entries(backend="stub", model="esmc-300m")
+    ] == ["c"]
 
 
 def test_entries_on_unknown_model_is_empty(tmp_path: Path) -> None:
     """A model never written to yields nothing rather than raising."""
-    assert list(_storage(tmp_path).entries(model="esmc-6b")) == []
+    assert list(_storage(tmp_path).entries(backend="stub", model="esmc-6b")) == []
 
 
-def test_models_counts_entries_per_model(tmp_path: Path) -> None:
-    """The store can say which models it holds, and how many entries each has.
+def test_runs_counts_entries_per_backend_and_model(tmp_path: Path) -> None:
+    """The store can say which pairs it holds, and how many entries each has.
 
-    This is what lets a report explain that the model it was asked for has
+    This is what lets a report explain that the pair it was asked for has
     nothing stored, by naming the ones that do.
     """
     storage = _storage(tmp_path)
-    storage.save(_result(), model="esmc-600m", label="a", metadata={})
-    storage.save(_result(OTHER_SEQUENCE), model="esmc-600m", label="b", metadata={})
-    storage.save(_result(), model="esmc-300m", label="c", metadata={})
+    storage.save(_result(), backend="stub", model="esmc-600m", label="a", metadata={})
+    storage.save(
+        _result(OTHER_SEQUENCE),
+        backend="stub",
+        model="esmc-600m",
+        label="b",
+        metadata={},
+    )
+    storage.save(_result(), backend="stub", model="esmc-300m", label="c", metadata={})
+    storage.save(_result(), backend="local", model="esmc-600m", label="d", metadata={})
 
-    assert storage.models() == [("esmc-300m", 1), ("esmc-600m", 2)]
+    assert storage.runs() == [
+        StoredRun(backend="local", model="esmc-600m", count=1),
+        StoredRun(backend="stub", model="esmc-300m", count=1),
+        StoredRun(backend="stub", model="esmc-600m", count=2),
+    ]
 
 
-def test_models_on_an_empty_store_is_empty(tmp_path: Path) -> None:
-    """An empty store is distinguishable from one missing just the asked model."""
-    assert _storage(tmp_path).models() == []
+def test_runs_on_an_empty_store_is_empty(tmp_path: Path) -> None:
+    """An empty store is distinguishable from one missing just the asked pair."""
+    assert _storage(tmp_path).runs() == []
 
 
 def test_schema_is_created_on_a_fresh_database(tmp_path: Path) -> None:
@@ -269,9 +369,13 @@ def test_schema_is_created_on_a_fresh_database(tmp_path: Path) -> None:
 def test_metadata_round_trips_nested_structure(tmp_path: Path) -> None:
     """Lists and nested objects survive, so callers are not limited to flat strings."""
     storage = _storage(tmp_path)
-    storage.save(_result(), model="esmc-600m", label="stat1", metadata=METADATA)
+    storage.save(
+        _result(), backend="stub", model="esmc-600m", label="stat1", metadata=METADATA
+    )
 
-    stored = storage.load(model="esmc-600m", sequence=SEQUENCE, **whole(SEQUENCE))
+    stored = storage.load(
+        backend="stub", model="esmc-600m", sequence=SEQUENCE, **whole(SEQUENCE)
+    )
 
     assert stored.metadata == METADATA
     assert stored.metadata["targets"] == ["P11111", "P22222"]
@@ -280,11 +384,21 @@ def test_metadata_round_trips_nested_structure(tmp_path: Path) -> None:
 def test_metadata_survives_a_recompute(tmp_path: Path) -> None:
     """The upsert refreshes metadata rather than keeping the first run's copy."""
     storage = _storage(tmp_path)
-    storage.save(_result(), model="esmc-600m", label="a", metadata={"targets": []})
-    storage.save(_result(), model="esmc-600m", label="a", metadata=METADATA)
+    storage.save(
+        _result(),
+        backend="stub",
+        model="esmc-600m",
+        label="a",
+        metadata={"targets": []},
+    )
+    storage.save(
+        _result(), backend="stub", model="esmc-600m", label="a", metadata=METADATA
+    )
 
     assert (
-        storage.load(model="esmc-600m", sequence=SEQUENCE, **whole(SEQUENCE)).metadata
+        storage.load(
+            backend="stub", model="esmc-600m", sequence=SEQUENCE, **whole(SEQUENCE)
+        ).metadata
         == METADATA
     )
 
@@ -293,9 +407,12 @@ def test_metadata_is_queryable_without_decoding_in_python(tmp_path: Path) -> Non
     """Storing an object rather than an opaque blob keeps SQL able to filter on it."""
     path = tmp_path / "logits.sqlite3"
     storage = SqliteLogitsStorage(path)
-    storage.save(_result(), model="esmc-600m", label="a", metadata=METADATA)
+    storage.save(
+        _result(), backend="stub", model="esmc-600m", label="a", metadata=METADATA
+    )
     storage.save(
         _result(OTHER_SEQUENCE),
+        backend="stub",
         model="esmc-600m",
         label="b",
         metadata={"source": "UniProt:Q99999"},

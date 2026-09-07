@@ -141,7 +141,7 @@ def _compute(args: argparse.Namespace) -> int:
         f"\n{stats.computed} computed, {stats.skipped} already stored "
         f"({stats.n_sequences} sequence(s)); build reports with:\n"
         f"  sequences_report.py {settings.storage.flags()} "
-        f"--model {settings.model}"
+        f"--backend {settings.backend} --model {settings.model}"
     )
     return 0
 

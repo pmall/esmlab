@@ -6,10 +6,11 @@ from pathlib import Path
 
 import pytest
 
+from esmlab.connectors.stub import StubConnector
 from esmlab.inference import InferenceSettings, run_inference
 from esmlab.seqio import NamedSequence
 from esmlab.sequences_report import ReportSettings, run_report
-from esmlab.storage import StorageSettings, logits_key
+from esmlab.storage import StorageSettings, logits_key, open_storage
 from tests.fixtures import named, sqlite_settings
 
 SEQUENCE = "ACDEFGHIKLMNPQRSTVWY"
@@ -43,9 +44,14 @@ def _populate(
 
 
 def _settings(
-    tmp_path: Path, *, window: int = 9, model: str | None = "esmc-600m"
+    tmp_path: Path,
+    *,
+    window: int = 9,
+    backend: str | None = "stub",
+    model: str | None = "esmc-600m",
 ) -> ReportSettings:
     return ReportSettings(
+        backend=backend,
         model=model,
         storage=sqlite_settings(tmp_path / "logits.sqlite3"),
         out_dir=tmp_path / "reports",
@@ -72,7 +78,8 @@ def test_a_run_writes_one_page_per_entry_and_an_index(tmp_path: Path) -> None:
     run_report(settings)
 
     assert {
-        path.name for path in (settings.out_dir / "sequences" / "esmc-600m").iterdir()
+        path.name
+        for path in (settings.out_dir / "sequences" / "stub" / "esmc-600m").iterdir()
     } == {
         f"{logits_key(SEQUENCE, 1, len(SEQUENCE))}.html",
         f"{logits_key(OTHER_SEQUENCE, 1, len(OTHER_SEQUENCE))}.html",
@@ -90,6 +97,7 @@ def test_a_whole_sequence_entry_is_scored_over_every_residue(tmp_path: Path) -> 
     payload = _payload(
         settings.out_dir
         / "sequences"
+        / "stub"
         / "esmc-600m"
         / f"{logits_key(SEQUENCE, 1, len(SEQUENCE))}.html"
     )
@@ -108,7 +116,7 @@ def test_rerun_with_a_new_window_touches_no_storage(tmp_path: Path) -> None:
     run_report(_settings(tmp_path, window=15))
 
     assert database.stat().st_mtime_ns == before
-    page = _settings(tmp_path).out_dir / "sequences" / "esmc-600m"
+    page = _settings(tmp_path).out_dir / "sequences" / "stub" / "esmc-600m"
     payload = _payload(page / f"{logits_key(SEQUENCE, 1, len(SEQUENCE))}.html")
     assert payload["smoothed"] != payload["entropy"]
 
@@ -120,7 +128,9 @@ def test_index_ranks_every_entry_of_the_model(tmp_path: Path) -> None:
 
     run_report(settings)
 
-    payload = _payload(settings.out_dir / "sequences" / "esmc-600m" / "index.html")
+    payload = _payload(
+        settings.out_dir / "sequences" / "stub" / "esmc-600m" / "index.html"
+    )
     means = [row["mean"] for row in payload["entries"]]
     assert len(means) == 2
     assert means == sorted(means)
@@ -134,8 +144,35 @@ def test_no_model_reports_every_model_in_one_run(tmp_path: Path) -> None:
 
     run_report(settings)
 
-    assert (settings.out_dir / "sequences" / "esmc-300m" / "index.html").is_file()
-    assert (settings.out_dir / "sequences" / "esmc-600m" / "index.html").is_file()
+    assert (
+        settings.out_dir / "sequences" / "stub" / "esmc-300m" / "index.html"
+    ).is_file()
+    assert (
+        settings.out_dir / "sequences" / "stub" / "esmc-600m" / "index.html"
+    ).is_file()
+
+
+def test_each_backend_gets_its_own_directory(tmp_path: Path) -> None:
+    """One sequence scored by two backends is two pages, not one overwritten.
+
+    The storage key is the sequence's alone, so what produced the entry has to
+    be in the path for both results to survive.
+    """
+    storage = open_storage(_populate(tmp_path, [named("tiny", SEQUENCE)]))
+    storage.save(
+        StubConnector("esmc-600m").masked_sequence_logits(SEQUENCE, 1, len(SEQUENCE)),
+        backend="local",
+        model="esmc-600m",
+        label="tiny",
+        metadata={},
+    )
+
+    run_report(_settings(tmp_path, backend=None))
+
+    page = f"{logits_key(SEQUENCE, 1, len(SEQUENCE))}.html"
+    reports = tmp_path / "reports" / "sequences"
+    assert (reports / "stub" / "esmc-600m" / page).is_file()
+    assert (reports / "local" / "esmc-600m" / page).is_file()
 
 
 def test_reporting_an_empty_storage_is_an_error(tmp_path: Path) -> None:

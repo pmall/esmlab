@@ -151,7 +151,7 @@
   // The page is about the whole sequence, so a position is just a position:
   // 1..n with n the length, and nothing to state coordinates against.
   document.getElementById("meta").innerHTML =
-    data.length + " residues &middot; model " + data.model +
+    data.length + " residues &middot; " + data.backend + "/" + data.model +
     " &middot; computed " + when(data.created_utc) + " &middot; <code>" + data.key + "</code>";
 
   const stats = document.getElementById("stats");

@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from esmlab.amino_acids import VALID_AMINO_ACIDS
+from esmlab.connectors.stub import StubConnector
 from esmlab.inference import InferenceSettings, run_inference
 from esmlab.peptides_report import ReportSettings, run_report
 from esmlab.seqio import NamedSequence
@@ -44,9 +45,14 @@ def _populate(
 
 
 def _settings(
-    tmp_path: Path, *, threshold: float = 0.8, model: str | None = "esmc-600m"
+    tmp_path: Path,
+    *,
+    threshold: float = 0.8,
+    backend: str | None = "stub",
+    model: str | None = "esmc-600m",
 ) -> ReportSettings:
     return ReportSettings(
+        backend=backend,
         model=model,
         storage=sqlite_settings(tmp_path / "logits.sqlite3"),
         out_dir=tmp_path / "reports",
@@ -69,13 +75,37 @@ def _payload(page: Path) -> dict:
 def _page(
     tmp_path: Path,
     sequence: str = SEQUENCE,
+    backend: str = "stub",
     model: str = "esmc-600m",
     start: int = 1,
     stop: int | None = None,
 ) -> Path:
     """Where the report stage writes one request's page."""
     key = logits_key(sequence, start, len(sequence) if stop is None else stop)
-    return tmp_path / "reports" / "peptides" / model / f"{key}.html"
+    return tmp_path / "reports" / "peptides" / backend / model / f"{key}.html"
+
+
+def _store_under(
+    storage: StorageSettings, backend: str, sequences: list[NamedSequence]
+) -> None:
+    """Files stub logits under another backend's name, without running that backend.
+
+    Grouping entries by what produced them is what the report path now
+    expresses, and a second backend's rows are what proves it; no test may run
+    a backend that costs money or downloads a checkpoint.
+    """
+    store = open_storage(storage)
+    connector = StubConnector("esmc-600m")
+    for record in sequences:
+        store.save(
+            connector.masked_sequence_logits(
+                record.sequence, record.start, record.stop
+            ),
+            backend=backend,
+            model="esmc-600m",
+            label=record.name,
+            metadata={},
+        )
 
 
 def test_a_run_writes_one_page_per_entry_and_an_index(tmp_path: Path) -> None:
@@ -86,7 +116,8 @@ def test_a_run_writes_one_page_per_entry_and_an_index(tmp_path: Path) -> None:
     run_report(settings)
 
     assert {
-        path.name for path in (settings.out_dir / "peptides" / "esmc-600m").iterdir()
+        path.name
+        for path in (settings.out_dir / "peptides" / "stub" / "esmc-600m").iterdir()
     } == {
         f"{logits_key(SEQUENCE, 1, len(SEQUENCE))}.html",
         "index.html",
@@ -120,8 +151,10 @@ def test_index_maps_keys_back_to_labels(tmp_path: Path) -> None:
 
     run_report(settings)
 
-    payload = _payload(settings.out_dir / "peptides" / "esmc-600m" / "index.html")
-    assert payload["model"] == "esmc-600m"
+    payload = _payload(
+        settings.out_dir / "peptides" / "stub" / "esmc-600m" / "index.html"
+    )
+    assert (payload["backend"], payload["model"]) == ("stub", "esmc-600m")
     assert payload["entries"] == [
         {
             "key": logits_key(SEQUENCE, 1, len(SEQUENCE)),
@@ -168,7 +201,9 @@ def test_a_region_stores_only_its_own_rows_against_the_whole_sequence(
     """
     storage = open_storage(_populate(tmp_path, [named("peptide", SEQUENCE, 5, 9)]))
 
-    stored = storage.load(model="esmc-600m", sequence=SEQUENCE, start=5, stop=9)
+    stored = storage.load(
+        backend="stub", model="esmc-600m", sequence=SEQUENCE, start=5, stop=9
+    )
 
     assert stored.logits.sequence == SEQUENCE
     assert (stored.logits.start, stored.logits.stop) == (5, 9)
@@ -183,7 +218,9 @@ def test_rerun_with_new_threshold_touches_no_storage(tmp_path: Path) -> None:
     pipeline re-ran the model to change one presentation knob.
     """
     storage = open_storage(_populate(tmp_path, [named("tiny", SEQUENCE)]))
-    before = storage.load(model="esmc-600m", sequence=SEQUENCE, **whole(SEQUENCE))
+    before = storage.load(
+        backend="stub", model="esmc-600m", sequence=SEQUENCE, **whole(SEQUENCE)
+    )
 
     run_report(_settings(tmp_path, threshold=0.0))
     strict = sum(_payload(_page(tmp_path))["tolerant"])
@@ -193,7 +230,9 @@ def test_rerun_with_new_threshold_touches_no_storage(tmp_path: Path) -> None:
 
     assert loose > strict
     # A rewritten row would carry a fresh created_utc.
-    after = storage.load(model="esmc-600m", sequence=SEQUENCE, **whole(SEQUENCE))
+    after = storage.load(
+        backend="stub", model="esmc-600m", sequence=SEQUENCE, **whole(SEQUENCE)
+    )
     assert after.created_utc == before.created_utc
 
 
@@ -207,7 +246,7 @@ def test_two_records_sharing_a_label_both_get_reports(tmp_path: Path) -> None:
 
     run_report(settings)
 
-    model_dir = settings.out_dir / "peptides" / "esmc-600m"
+    model_dir = settings.out_dir / "peptides" / "stub" / "esmc-600m"
     assert (model_dir / f"{logits_key(SEQUENCE, 1, len(SEQUENCE))}.html").is_file()
     assert (
         model_dir / f"{logits_key(OTHER_SEQUENCE, 1, len(OTHER_SEQUENCE))}.html"
@@ -227,7 +266,9 @@ def test_no_model_reports_every_model_in_one_run(tmp_path: Path) -> None:
 
     for model in ("esmc-600m", "esmc-300m"):
         assert _page(tmp_path, model=model).is_file()
-        index = _payload(tmp_path / "reports" / "peptides" / model / "index.html")
+        index = _payload(
+            tmp_path / "reports" / "peptides" / "stub" / model / "index.html"
+        )
         assert index["model"] == model
         assert [row["key"] for row in index["entries"]] == [
             logits_key(SEQUENCE, 1, len(SEQUENCE))
@@ -242,7 +283,46 @@ def test_a_named_model_reports_only_that_model(tmp_path: Path) -> None:
     run_report(_settings(tmp_path, model="esmc-300m"))
 
     assert _page(tmp_path, model="esmc-300m").is_file()
-    assert not (tmp_path / "reports" / "peptides" / "esmc-600m").exists()
+    assert not (tmp_path / "reports" / "peptides" / "stub" / "esmc-600m").exists()
+
+
+def test_each_backend_gets_its_own_directory(tmp_path: Path) -> None:
+    """One sequence scored by two backends is two pages, not one overwritten.
+
+    The storage key is the sequence's alone, so what produced the entry has to
+    be in the path for both results to survive.
+    """
+    storage = _populate(tmp_path, [named("tiny", SEQUENCE)])
+    _store_under(storage, "local", [named("tiny", SEQUENCE)])
+
+    run_report(_settings(tmp_path, backend=None))
+
+    assert _page(tmp_path, backend="stub").is_file()
+    assert _page(tmp_path, backend="local").is_file()
+
+
+def test_a_named_backend_reports_only_that_backend(tmp_path: Path) -> None:
+    """``--backend`` narrows the run the same way ``--model`` does."""
+    storage = _populate(tmp_path, [named("tiny", SEQUENCE)])
+    _store_under(storage, "local", [named("tiny", SEQUENCE)])
+
+    run_report(_settings(tmp_path, backend="local"))
+
+    assert _page(tmp_path, backend="local").is_file()
+    assert not (tmp_path / "reports" / "peptides" / "stub").exists()
+
+
+def test_reporting_a_backend_with_no_entries_names_the_stored_ones(
+    tmp_path: Path,
+) -> None:
+    """An unstored backend fails like an unstored model, naming the pairs held."""
+    _populate(tmp_path, [named("tiny", SEQUENCE)])
+    settings = _settings(tmp_path, backend="modal")
+
+    with pytest.raises(ValueError, match=r"stub/esmc-600m \(1\)"):
+        run_report(settings)
+
+    assert not settings.out_dir.exists()
 
 
 def test_reporting_a_model_with_no_entries_names_the_stored_ones(

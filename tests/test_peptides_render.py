@@ -24,6 +24,7 @@ SEQUENCE = "ACDEFGHIKLMNPQRSTVWY"
 def _payload_for(result: SequenceLogits, label: str = "tiny") -> Payload:
     """The payload for one handcrafted result, as the report stage builds it."""
     entry = StoredLogits(
+        backend="stub",
         model="esmc-600m",
         label=label,
         metadata={},

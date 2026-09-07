@@ -8,19 +8,21 @@ work over arrays that are already stored; another analysis of the same logits
 is a sibling script rather than another model run.
 
 It iterates the storage rather than an input file — the store is the source of
-truth for what has been computed — and renders every entry held for ``--model``.
-Each entry becomes a self-contained ``<out>/peptides/<model>/<key>.html`` page,
-keyed by the sequence's storage digest rather than by its label, beside an
-``index.html`` linking that model's keys back to labels for humans. ``--out`` is
-the reports root every topic shares (default ``data/reports``); the topic and
-the model are in the path below it because the key is the sequence's alone, so
-neither another topic nor another model may share a directory with it. Open a
-model's ``index.html`` to read a run; a page needs a network connection the
-first time, for the charting library it loads from a CDN.
+truth for what has been computed — and renders every entry held for the
+selected ``--backend`` and ``--model``. Each entry becomes a self-contained
+``<out>/peptides/<backend>/<model>/<key>.html`` page, keyed by the sequence's
+storage digest rather than by its label, beside an ``index.html`` linking that
+run's keys back to labels for humans. ``--out`` is the reports root every topic
+shares (default ``data/reports``); the topic, the backend and the model are in
+the path below it because the key is the sequence's alone, so nothing else may
+share a directory with it. Open a run's ``index.html`` to read it; a page needs
+a network connection the first time, for the charting library it loads from a
+CDN.
 
-``--model`` is optional: the default renders every model the store holds, since
-reporting costs no model time. Naming a model with nothing stored is a CLI
-error listing the models that do have entries.
+``--backend`` and ``--model`` are both optional: the default renders every
+backend and model the store holds, since reporting costs no model time. Naming
+a pair with nothing stored is a CLI error listing the pairs that do have
+entries.
 
 Takes the same storage flags as ``peptides_logits.py``, and reads by default
 the same ``data/peptides.sqlite`` it writes.
@@ -30,6 +32,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from esmlab.connectors import BACKENDS
 from esmlab.connectors.base import CANONICAL_SEQUENCE_MODELS
 from esmlab.params import load_env
 from esmlab.peptides_report import ReportSettings, run_report
@@ -45,13 +48,20 @@ SQLITE_PATH = Path("data/peptides.sqlite")
 def _build_parser() -> argparse.ArgumentParser:
     """Builds the argparse parser.
 
-    No backend flags and no model credentials: this stage reads stored arrays
-    and never constructs a connector. The storage flags are the same ones
-    ``peptides_logits`` declares, so a run's printed command line is copyable.
+    No model credentials, and ``--backend`` here selects stored entries rather
+    than a connector: this stage reads stored arrays and never runs a model.
+    The storage flags are the same ones ``peptides_logits`` declares, so a
+    run's printed command line is copyable.
     """
     # argparse takes the summary line only: the rest of the module docstring
     # is for someone reading the file, and would swamp --help.
     parser = argparse.ArgumentParser(description=SUMMARY)
+    parser.add_argument(
+        "--backend",
+        choices=BACKENDS,
+        default=None,
+        help="Report only on entries this backend computed (default: every backend)",
+    )
     parser.add_argument(
         "--model",
         choices=CANONICAL_SEQUENCE_MODELS,
@@ -90,6 +100,7 @@ def _report(args: argparse.Namespace) -> int:
     """
     load_env()
     settings = ReportSettings(
+        backend=args.backend,
         model=args.model,
         storage=storage_settings(args, sqlite_default=SQLITE_PATH),
         out_dir=args.out,
