@@ -25,21 +25,25 @@ official ESM protein language models from EvolutionaryScale/Biohub.
 | --- | --- |
 | `scripts/` | executable entrypoints only; each defines `main()`, which parses and validates parameters and delegates |
 | `esmlab/connectors/` | model backends behind one Protocol in `base.py`, one module per backend, each co-locating its own CLI params |
-| `esmlab/storage.py` | logits persistence: schema, SQLite/PostgreSQL backends, and the storage CLI params both scripts share |
+| `esmlab/storage.py` | logits persistence: schema, SQLite/PostgreSQL backends, and the storage CLI params every script shares; one database per topic |
 | `esmlab/params.py` | `ParamSpec` / `resolve_params` / `load_env`, shared by connectors and storage |
-| `esmlab/seqio.py` | sequence input: FASTA parsing (label, start/stop, metadata), validation, the `NamedSequence` record |
+| `esmlab/seqio.py` | sequence input: both FASTA header formats, validation, the `NamedSequence` record |
 | `esmlab/inference.py` | compute stage: orchestrates a connector and a storage, appends the perf CSV |
 | `esmlab/amino_acids.py` | the canonical amino-acid alphabet |
-| `esmlab/mutation_*.py` | the mutation-analysis topic: scoring math, report payload and pages, artifact writing |
-| `esmlab/templates/` | the report's static HTML pages; Python only injects their JSON payload |
+| `esmlab/distributions.py` | per-position amino-acid distributions and their entropy, shared by every logits topic |
+| `esmlab/rendering.py` | the one page mechanism: a static template plus one injected JSON payload |
+| `esmlab/peptides_*.py` | the peptides topic: mutation-scoring math, report payload and pages, artifact writing |
+| `esmlab/sequences_*.py` | the sequences topic: entropy math, report payload and pages, the same three parts |
+| `esmlab/templates/` | two static HTML pages per report topic, `<topic>_entry` and `<topic>_index`; Python only injects their JSON payload |
 | `tests/` | pytest suite; model-dependent paths run against the `stub` backend |
 | `data/` | generated outputs and databases, gitignored |
 | `references/` | read-only upstream ESM submodule (see Reference map) |
 
 Three layers stay independent throughout: **connectors compute**, **storage
 persists**, **scripts orchestrate**. No connector writes, and no storage
-computes. Everything above is topic-agnostic except the `mutation_*` modules;
-Script topology describes how a topic is assembled from these layers.
+computes. Everything above is topic-agnostic except the `peptides_*` and
+`sequences_*` modules; Script topology describes how a topic is assembled from
+these layers.
 
 ## Compute
 
@@ -83,43 +87,37 @@ Everything below the script layer is topic-agnostic:
 | --- | --- |
 | `esmlab/inference.py` | compute phase for any topic built on masked logits: orchestrates a connector and a storage |
 | `esmlab/connectors/` | model access |
-| `esmlab/storage.py` | persistence |
+| `esmlab/storage.py` | persistence, and which models a consuming phase covers |
 | `esmlab/params.py`, `esmlab/seqio.py` | CLI parameters, sequence input |
+| `esmlab/distributions.py`, `esmlab/rendering.py` | the distribution every topic reads out, the page mechanism every report is built with |
 
-### Mutation analysis
+### Scripts
 
-| script | module | does |
-| --- | --- | --- |
-| `scripts/mutation_logits.py` | `esmlab/inference.py` | computes missing logits and stores them; appends the perf CSV |
-| `scripts/mutation_report.py` | `esmlab/mutation_report.py` (+ `mutation_scoring.py`, `mutation_render.py`) | reads a storage and renders every entry, for every model, as one HTML page |
+Two topics so far — peptides and sequences — each a compute script and a report
+script. A script's own docstring is where it explains itself: its input format,
+what it writes, and its knobs. This table says only which script to open.
 
-Both accept the same storage flags, and `mutation_logits` prints the
-`mutation_report` command line that reopens the store it just wrote.
-`mutation_logits.py` drives the topic-agnostic compute phase: it computes
-masked logits and stores them, which is the entry point for any logits-based
-topic.
+| script | phase | topic | does |
+| --- | --- | --- | --- |
+| `scripts/peptides_logits.py` | compute | peptides | masked logits for the sub-sequence each FASTA header names |
+| `scripts/peptides_report.py` | report | peptides | per-position entropy, substitution LLR matrix and rankings |
+| `scripts/sequences_logits.py` | compute | sequences | masked logits for whole sequences, from a FASTA with no coordinates |
+| `scripts/sequences_report.py` | report | sequences | per-position entropy over the whole sequence, and an index ranking sequences |
 
-The report stage is split so nothing in it owns both data and files:
-`mutation_scoring.analyze` derives the numbers, `mutation_render` turns them
-into a JSON payload and fills a static template with it, and
-`mutation_report` is the only part that knows about paths. A page carries its
-whole payload and draws itself with Chart.js from a CDN, so it opens straight
-from disk and is the entry's whole report — there is no sidecar file — and a
+A topic owns its store: `peptides_logits.py` writes `data/peptides.sqlite` and
+`sequences_logits.py` writes `data/sequences.sqlite`, each report reading the
+one its topic wrote. The store is therefore the report's scope — a run covers
+what that topic computed and nothing else — and `--sqlite-path` points either
+pair elsewhere. Reports do share one root, `data/reports`, with a directory per
+topic and per model below it: `<out>/<topic>/<model>/<key>.html`.
+
+Each topic's report stage is split three ways, so nothing in it owns both data
+and files: `*_scoring` derives the numbers, `*_render` turns them into a JSON
+payload and fills a static template, and `*_report` is the only part that knows
+about paths. A page carries its whole payload and draws itself with Chart.js
+from a CDN, so it opens straight from disk and needs no sidecar file, and a
 future web view over the same storage can serve the payload from the same two
-calls instead of re-deriving anything. A run renders every model in the store
-unless `--model` narrows it, each model's pages under `<out>/<model>/` beside
-their own `index.html`.
-
-Every FASTA header names the sub-sequence it is about — `>label|start|stop`,
-1-based and inclusive, with an optional `|{...}` metadata object. The whole
-sequence is still what the model sees on every forward pass, because a peptide
-alone gives it no context to condition on, but only those residues are masked,
-so the cost is one pass per residue of interest rather than per residue of the
-protein. A stored row therefore covers its own region, which is why
-`logits_key` digests `start`/`stop` alongside the sequence and two
-sub-sequences of one protein are two rows. The report is about the
-sub-sequence: it numbers those residues 1..n and records the coordinates as
-provenance.
+calls.
 
 ## Reference map
 

@@ -1,10 +1,10 @@
-"""Zero-shot mutation-analysis math operating on masked-position logits.
+"""Zero-shot mutation-scoring math over one peptide's masked-position logits.
 
 Every function takes a :class:`SequenceLogits` or derived numpy arrays and is
-pure CPU work, so it can be tested without any inference backend. All amino
-acid statistics are computed over the 20 canonical residues only: the token
-distributions also cover special tokens (<cls>, <mask>, ...), which would
-inflate entropies uniformly without carrying mutation information.
+pure CPU work, so it can be tested without any inference backend. The
+distribution these numbers are read out of is
+:mod:`esmlab.distributions`, which every logits topic shares; what belongs here
+is what needs a wildtype residue to mean anything.
 """
 
 from dataclasses import dataclass
@@ -15,38 +15,7 @@ from numpy import newaxis
 
 from esmlab.amino_acids import VALID_AMINO_ACIDS
 from esmlab.connectors.base import SequenceLogits
-
-
-def uniform_entropy_bits(alphabet_size: int) -> float:
-    """Entropy of a uniform distribution over ``alphabet_size`` symbols.
-
-    Used by :mod:`esmlab.mutation_render` to place the uniform-distribution
-    reference lines on the entropy chart.
-    """
-    return float(np.log2(alphabet_size))
-
-
-def aa_log_probs(result: SequenceLogits) -> npt.NDArray[np.float64]:
-    """Log-softmax restricted to the canonical amino acid columns, shape (L, 20).
-
-    The shared foundation for the rest of the module:
-    :func:`entropy_per_position` and :func:`llr_matrix` both call this.
-    """
-    columns = [result.vocab[aa] for aa in VALID_AMINO_ACIDS]
-    rows = result.logits[:, columns].astype(np.float64)
-    shifted = rows - rows.max(axis=1, keepdims=True)
-    normalizer = np.log(np.exp(shifted).sum(axis=1, keepdims=True))
-    return shifted - normalizer
-
-
-def entropy_per_position(result: SequenceLogits) -> npt.NDArray[np.float64]:
-    """Shannon entropy in bits of the amino-acid distribution at each position.
-
-    Built on :func:`aa_log_probs`; bundled into :class:`EntryAnalysis`, which
-    feeds the entropy chart and the most-constrained-positions highlights.
-    """
-    probs = np.exp(aa_log_probs(result))
-    return -(probs * np.log2(probs)).sum(axis=1)
+from esmlab.distributions import aa_log_probs, entropy_per_position
 
 
 def llr_matrix(result: SequenceLogits) -> npt.NDArray[np.float64]:
@@ -88,7 +57,7 @@ def rank_substitutions(
     their LLR is 0 by definition and would otherwise crowd the ranking.
 
     Consumes :func:`llr_matrix`'s output; called by
-    :mod:`esmlab.mutation_render` for the top-tolerated-substitutions list.
+    :mod:`esmlab.peptides_render` for the top-tolerated-substitutions list.
     """
     scores: list[tuple[int, str, str, float]] = []
     for position, wildtype in enumerate(sequence):
@@ -113,7 +82,7 @@ class EntryAnalysis:
     ``i`` of each describes residue ``start + i`` of the stored sequence, whose
     wildtype is ``residues[i]``.
 
-    Assembled by :func:`analyze`; consumed by :mod:`esmlab.mutation_render`,
+    Assembled by :func:`analyze`; consumed by :mod:`esmlab.peptides_render`,
     which turns it into the report payload.
     """
 

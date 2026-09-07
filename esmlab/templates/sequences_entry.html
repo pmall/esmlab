@@ -1,0 +1,281 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sequence report</title>
+<!--
+  One sequence's report. Everything the page draws comes from the JSON
+  island below, which esmlab.sequences_render fills in; nothing else is
+  substituted, so this file opens as-is with a hand-written payload.
+-->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    color-scheme: light;
+    --surface: #fcfcfb;
+    --plane: #f9f9f7;
+    --ink: #0b0b0b;
+    --ink-2: #52514e;
+    --muted: #898781;
+    --grid: #e1e0d9;
+    --border: rgba(11, 11, 11, 0.10);
+    --series: #2a78d6;
+    --trend: #d03b3b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --surface: #1a1a19;
+      --plane: #0d0d0d;
+      --ink: #ffffff;
+      --ink-2: #c3c2b7;
+      --grid: #2c2c2a;
+      --border: rgba(255, 255, 255, 0.10);
+      --series: #3987e5;
+      --trend: #e66767;
+    }
+  }
+  body {
+    margin: 0;
+    padding: 32px 24px 64px;
+    background: var(--plane);
+    color: var(--ink);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 1100px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  h2 { font-size: 15px; margin: 0 0 12px; font-weight: 600; }
+  .meta { color: var(--ink-2); margin: 0 0 24px; }
+  .meta code { color: var(--muted); }
+  section {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+    margin-bottom: 20px;
+  }
+  .scroll { overflow-x: auto; }
+  /* Chart.js with maintainAspectRatio:false sizes a canvas to its container,
+     so the container must have a height of its own. Without one the canvas
+     height feeds back into the container's, and every resize grows both. */
+  .chart { position: relative; height: 280px; }
+  .chart.short { height: 220px; }
+  .stats { display: flex; flex-wrap: wrap; gap: 28px; margin: 0; }
+  .stats div { min-width: 96px; }
+  .stats dt { color: var(--muted); font-size: 12px; }
+  .stats dd { margin: 2px 0 0; font-size: 20px; font-variant-numeric: tabular-nums; }
+  .stats dd span { font-size: 12px; color: var(--muted); }
+  /* Set in the same ink as the page's running text. There is no region to
+     pick out of a context here, so nothing to grey the sequence against; the
+     body default reads heavy over a block this dense. */
+  .sequence {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    word-break: break-all;
+    color: var(--ink-2);
+    margin: 0;
+  }
+  .caption { color: var(--muted); font-size: 12px; margin: 8px 0 0; }
+  .highlights { display: flex; flex-wrap: wrap; gap: 32px; }
+  .highlights ul { margin: 0; padding-left: 18px; color: var(--ink-2); }
+  .highlights h3 { font-size: 13px; margin: 0 0 6px; color: var(--muted); font-weight: 600; }
+  table { border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { padding: 3px 8px; text-align: right; white-space: nowrap; }
+  thead th { color: var(--muted); font-weight: 600; border-bottom: 1px solid var(--grid); }
+  tbody tr:hover { background: var(--plane); }
+</style>
+
+<script type="application/json" id="payload">__PAYLOAD__</script>
+
+<main>
+  <h1 id="title"></h1>
+  <p class="meta" id="meta"></p>
+
+  <section>
+    <h2>Entropy summary</h2>
+    <dl class="stats" id="stats"></dl>
+    <p class="caption" id="stats-caption"></p>
+  </section>
+
+  <section>
+    <h2>Sequence</h2>
+    <p class="sequence" id="sequence"></p>
+  </section>
+
+  <section>
+    <h2>Highlights</h2>
+    <div class="highlights">
+      <div><h3>Most constrained</h3><ul id="constrained"></ul></div>
+      <div><h3>Most variable</h3><ul id="variable"></ul></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Entropy per position</h2>
+    <div class="chart"><canvas id="entropy"></canvas></div>
+  </section>
+
+  <section>
+    <h2>Distribution of per-position entropy</h2>
+    <div class="chart short"><canvas id="histogram"></canvas></div>
+  </section>
+
+  <section>
+    <h2>Per-position summary</h2>
+    <div class="scroll"><table id="summary"></table></div>
+  </section>
+</main>
+
+<script>
+  const data = JSON.parse(document.getElementById("payload").textContent);
+
+  const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  const fixed = (value, digits) => value.toFixed(digits);
+
+  const element = (tag, text) => {
+    const node = document.createElement(tag);
+    if (text !== undefined) node.textContent = text;
+    return node;
+  };
+
+  const row = (cells, tag) => {
+    const tr = document.createElement("tr");
+    for (const cell of cells) tr.appendChild(cell instanceof Node ? cell : element(tag || "td", cell));
+    return tr;
+  };
+
+  // Storage keeps a full ISO timestamp; a page only needs the minute, as the
+  // listing shows it.
+  const when = (iso) => iso.slice(0, 16).replace("T", " ");
+
+  document.title = data.label + " - sequence report";
+  document.getElementById("title").textContent = data.label;
+  // The page is about the whole sequence, so a position is just a position:
+  // 1..n with n the length, and nothing to state coordinates against.
+  document.getElementById("meta").innerHTML =
+    data.length + " residues &middot; model " + data.model +
+    " &middot; computed " + when(data.created_utc) + " &middot; <code>" + data.key + "</code>";
+
+  const stats = document.getElementById("stats");
+  const cells = [
+    ["mean", data.summary.mean], ["median", data.summary.median],
+    ["lower quartile", data.summary.lower_quartile],
+    ["upper quartile", data.summary.upper_quartile],
+    ["min", data.summary.minimum], ["max", data.summary.maximum],
+  ];
+  for (const [name, value] of cells) {
+    const cell = document.createElement("div");
+    cell.appendChild(element("dt", name));
+    const dd = element("dd", fixed(value, 3));
+    dd.appendChild(element("span", " bits"));
+    cell.appendChild(dd);
+    stats.appendChild(cell);
+  }
+  // The ceiling is what makes a mean readable: 4.32 bits is a model with no
+  // opinion at all, so a mean is worth reading as a fraction of it.
+  document.getElementById("stats-caption").textContent =
+    "ceiling " + fixed(data.entropy_limit, 3) +
+    " bits (uniform over 20 residues); mean is " +
+    fixed((data.summary.mean / data.entropy_limit) * 100, 1) + "% of it";
+
+  document.getElementById("sequence").textContent = data.sequence;
+
+  const bullets = (id, items) => {
+    const list = document.getElementById(id);
+    for (const item of items) {
+      list.appendChild(
+        element("li", item.residue + item.position + " (" + fixed(item.value, 3) + " bits)"));
+    }
+  };
+  bullets("constrained", data.most_constrained);
+  bullets("variable", data.most_variable);
+
+  const summary = document.getElementById("summary");
+  const summaryHead = document.createElement("thead");
+  summaryHead.appendChild(row(["position", "residue", "entropy (bits)", "smoothed (bits)"], "th"));
+  summary.appendChild(summaryHead);
+  const summaryBody = document.createElement("tbody");
+  data.positions.forEach((position, index) => {
+    summaryBody.appendChild(row([
+      position,
+      data.residues[index],
+      fixed(data.entropy[index], 3),
+      fixed(data.smoothed[index], 3),
+    ]));
+  });
+  summary.appendChild(summaryBody);
+
+  // Chart colors are read from the CSS variables above, so both charts stay on
+  // one palette; a theme change rebuilds them because Chart.js bakes the
+  // resolved colors into its datasets.
+  let charts = [];
+  const draw = () => {
+    for (const chart of charts) chart.destroy();
+    const ink = css("--muted");
+    const grid = css("--grid");
+    const series = css("--series");
+    const trend = css("--trend");
+    const common = {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: "index", intersect: false },
+      plugins: { legend: { labels: { color: ink, boxHeight: 2 } } },
+      // The tables format numbers with a decimal point, so the axes must too:
+      // Chart.js would otherwise follow the browser locale and put "4,0" on an
+      // axis next to "1.782" in the table below it.
+      locale: "en-US",
+    };
+    const reference = (label, values, color, dash) => ({
+      type: "line", label, data: values, borderColor: color, borderWidth: 2,
+      borderDash: dash, pointRadius: 0, fill: false,
+    });
+    const constant = (value) => data.positions.map(() => value);
+    const labels = data.positions.map((position, index) => data.residues[index] + position);
+
+    charts = [
+      new Chart(document.getElementById("entropy"), {
+        type: "bar",
+        data: {
+          labels: labels,
+          datasets: [
+            { label: "Entropy (bits)", data: data.entropy, backgroundColor: series,
+              borderRadius: 4, borderSkipped: "bottom" },
+            reference("Rolling mean", data.smoothed, trend, undefined),
+          ].concat(data.entropy_references.map((line) =>
+            reference(line.label, constant(line.bits), ink, [4, 4]))),
+        },
+        options: {
+          ...common,
+          scales: {
+            x: { title: { text: "Position", display: true, color: ink },
+                 ticks: { color: ink, autoSkipPadding: 12 }, grid: { display: false } },
+            y: { beginAtZero: true, max: data.entropy_limit, ticks: { color: ink },
+                 grid: { color: grid },
+                 title: { text: "Entropy (bits)", display: true, color: ink } },
+          },
+        },
+      }),
+      new Chart(document.getElementById("histogram"), {
+        type: "bar",
+        data: {
+          labels: data.histogram.map((bin) => fixed(bin.bits, 2)),
+          datasets: [
+            { label: "Positions", data: data.histogram.map((bin) => bin.count),
+              backgroundColor: series, borderRadius: 2, borderSkipped: "bottom",
+              barPercentage: 1, categoryPercentage: 1 },
+          ],
+        },
+        options: {
+          ...common,
+          scales: {
+            x: { title: { text: "Entropy (bits)", display: true, color: ink },
+                 ticks: { color: ink, autoSkipPadding: 8 }, grid: { display: false } },
+            y: { beginAtZero: true, ticks: { color: ink, precision: 0 },
+                 grid: { color: grid },
+                 title: { text: "Positions", display: true, color: ink } },
+          },
+        },
+      }),
+    ];
+  };
+  draw();
+  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", draw);
+</script>

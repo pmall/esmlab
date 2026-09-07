@@ -1,37 +1,23 @@
-"""Report presentation: stored entries in, self-contained HTML pages out.
+"""Peptide-report presentation: stored entries in, self-contained pages out.
 
 Every function here returns a ``str`` or a JSON-ready ``dict`` and never
 touches the filesystem, so the same two calls back the files written by
-:mod:`esmlab.mutation_report` and a future HTTP handler reading the same
-storage.
+:mod:`esmlab.peptides_report` and a future HTTP handler reading the same
+storage. The template-filling mechanism itself is
+:mod:`esmlab.rendering`, shared with every other report topic.
 
-A page is a static template plus one injected JSON payload: the templates in
-``esmlab/templates`` hold all the markup and all the drawing code, and Python's
-whole job is to produce the payload. Charts are drawn client-side by Chart.js
-from a CDN, so nothing here renders images and the report stage needs no
-plotting dependency.
+Charts are drawn client-side by Chart.js from a CDN, so nothing here renders
+images and the report stage needs no plotting dependency.
 """
-
-import json
-from importlib import resources
-from typing import Any
 
 import numpy as np
 import numpy.typing as npt
 
 from esmlab.amino_acids import AA_TO_ISOELECTRIC_POINT, VALID_AMINO_ACIDS
-from esmlab.mutation_scoring import (
-    EntryAnalysis,
-    rank_substitutions,
-    uniform_entropy_bits,
-)
+from esmlab.distributions import uniform_entropy_bits
+from esmlab.peptides_scoring import EntryAnalysis, rank_substitutions
+from esmlab.rendering import Payload, fill_template
 from esmlab.storage import StoredLogits, logits_key
-
-# A page's data is plain JSON, so the payload is typed as loosely as it is
-# consumed: the template reads it dynamically and so do the tests.
-Payload = dict[str, Any]
-
-PAYLOAD_MARKER = "__PAYLOAD__"
 
 # Reference lines drawn across the entropy chart: the entropy of a uniform
 # choice among this many amino acids, so a bar's height reads as "this position
@@ -148,24 +134,12 @@ def index_payload(entries: list[Payload]) -> Payload:
 
 def render_entry(payload: Payload) -> str:
     """One entry's complete, self-contained HTML page."""
-    return _fill("report.html", payload)
+    return fill_template("peptides_entry.html", payload)
 
 
 def render_index(payload: Payload) -> str:
     """The listing page linking to every entry page in the same directory."""
-    return _fill("index.html", payload)
-
-
-def _fill(template: str, payload: Payload) -> str:
-    """Substitutes the payload into a template's JSON island.
-
-    ``</`` is escaped because the payload lands inside a ``<script>`` element,
-    where that sequence would otherwise end the element early - a label or a
-    metadata value is arbitrary text and may contain one.
-    """
-    markup = resources.files("esmlab.templates").joinpath(template).read_text()
-    encoded = json.dumps(payload, allow_nan=False).replace("</", "<\\/")
-    return markup.replace(PAYLOAD_MARKER, encoded)
+    return fill_template("peptides_index.html", payload)
 
 
 def _color_scale(llr: npt.NDArray[np.float64]) -> float:

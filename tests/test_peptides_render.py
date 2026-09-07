@@ -7,15 +7,14 @@ import pytest
 from esmlab.amino_acids import AA_TO_ISOELECTRIC_POINT, VALID_AMINO_ACIDS
 from esmlab.connectors.base import SequenceLogits
 from esmlab.connectors.stub import STUB_VOCAB
-from esmlab.mutation_render import (
-    PAYLOAD_MARKER,
-    Payload,
+from esmlab.peptides_render import (
     entry_payload,
     index_payload,
     render_entry,
     render_index,
 )
-from esmlab.mutation_scoring import analyze
+from esmlab.peptides_scoring import analyze
+from esmlab.rendering import PAYLOAD_MARKER, Payload
 from esmlab.storage import StoredLogits
 from tests.fixtures import make_result, one_hot_rows
 

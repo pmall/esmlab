@@ -8,7 +8,7 @@ import pytest
 
 from esmlab.amino_acids import VALID_AMINO_ACIDS
 from esmlab.inference import InferenceSettings, run_inference
-from esmlab.mutation_report import ReportSettings, run_report
+from esmlab.peptides_report import ReportSettings, run_report
 from esmlab.seqio import NamedSequence
 from esmlab.storage import StorageSettings, logits_key, open_storage
 from tests.fixtures import named, sqlite_settings, whole
@@ -75,7 +75,7 @@ def _page(
 ) -> Path:
     """Where the report stage writes one request's page."""
     key = logits_key(sequence, start, len(sequence) if stop is None else stop)
-    return tmp_path / "reports" / model / f"{key}.html"
+    return tmp_path / "reports" / "peptides" / model / f"{key}.html"
 
 
 def test_a_run_writes_one_page_per_entry_and_an_index(tmp_path: Path) -> None:
@@ -85,7 +85,9 @@ def test_a_run_writes_one_page_per_entry_and_an_index(tmp_path: Path) -> None:
 
     run_report(settings)
 
-    assert {path.name for path in (settings.out_dir / "esmc-600m").iterdir()} == {
+    assert {
+        path.name for path in (settings.out_dir / "peptides" / "esmc-600m").iterdir()
+    } == {
         f"{logits_key(SEQUENCE, 1, len(SEQUENCE))}.html",
         "index.html",
     }
@@ -118,7 +120,7 @@ def test_index_maps_keys_back_to_labels(tmp_path: Path) -> None:
 
     run_report(settings)
 
-    payload = _payload(settings.out_dir / "esmc-600m" / "index.html")
+    payload = _payload(settings.out_dir / "peptides" / "esmc-600m" / "index.html")
     assert payload["model"] == "esmc-600m"
     assert payload["entries"] == [
         {
@@ -205,7 +207,7 @@ def test_two_records_sharing_a_label_both_get_reports(tmp_path: Path) -> None:
 
     run_report(settings)
 
-    model_dir = settings.out_dir / "esmc-600m"
+    model_dir = settings.out_dir / "peptides" / "esmc-600m"
     assert (model_dir / f"{logits_key(SEQUENCE, 1, len(SEQUENCE))}.html").is_file()
     assert (
         model_dir / f"{logits_key(OTHER_SEQUENCE, 1, len(OTHER_SEQUENCE))}.html"
@@ -225,7 +227,7 @@ def test_no_model_reports_every_model_in_one_run(tmp_path: Path) -> None:
 
     for model in ("esmc-600m", "esmc-300m"):
         assert _page(tmp_path, model=model).is_file()
-        index = _payload(tmp_path / "reports" / model / "index.html")
+        index = _payload(tmp_path / "reports" / "peptides" / model / "index.html")
         assert index["model"] == model
         assert [row["key"] for row in index["entries"]] == [
             logits_key(SEQUENCE, 1, len(SEQUENCE))
@@ -240,7 +242,7 @@ def test_a_named_model_reports_only_that_model(tmp_path: Path) -> None:
     run_report(_settings(tmp_path, model="esmc-300m"))
 
     assert _page(tmp_path, model="esmc-300m").is_file()
-    assert not (tmp_path / "reports" / "esmc-600m").exists()
+    assert not (tmp_path / "reports" / "peptides" / "esmc-600m").exists()
 
 
 def test_reporting_a_model_with_no_entries_names_the_stored_ones(

@@ -1,9 +1,10 @@
 """Compute masked ESMC logits for protein sequences and persist them.
 
-The compute phase: this runs the model, and consuming scripts render what it
-stored. It computes masked logits and persists them, which is the entry point
-for any logits-based topic; the module it drives, :mod:`esmlab.inference`, is
-topic-agnostic.
+The compute phase of the peptides topic: this runs the model, and
+``peptides_report.py`` renders what it stored. It computes masked logits and
+persists them to ``data/peptides.sqlite``, this topic's own store; the module
+it drives, :mod:`esmlab.inference`, is topic-agnostic and
+``sequences_logits.py`` drives it too, into a store of its own.
 
 Sequences come from positional arguments and/or ``--fasta`` files (repeatable).
 A FASTA header is ``>label|start|stop`` with an optional ``|{...}`` metadata
@@ -19,7 +20,7 @@ Backend flags (``--backend`` and its credentials) and storage flags
 :mod:`esmlab.storage`, so a flag belonging to something you did not select is
 an error rather than being silently ignored. Most fall back to an environment
 variable read from ``.env``; see ``.env.example``, and ``--help`` for the
-current list. The run ends by printing the ``mutation_report.py`` command line
+current list. The run ends by printing the ``peptides_report.py`` command line
 that reopens the store it just wrote.
 
 Each run also appends one aggregate row to ``--perf-report``, which is
@@ -39,6 +40,10 @@ from esmlab.seqio import parse_sequences
 from esmlab.storage import add_storage_arguments, storage_settings
 
 SUMMARY = __doc__.partition("\n\n")[0] if __doc__ else ""
+
+# The store this topic writes and reads. One database per topic, so a report
+# covers this topic's runs and nothing else.
+SQLITE_PATH = Path("data/peptides.sqlite")
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -73,7 +78,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default="esmc-600m",
         help="ESMC model size, supported by every backend (default: esmc-600m)",
     )
-    add_storage_arguments(parser)
+    add_storage_arguments(parser, sqlite_default=SQLITE_PATH)
     parser.add_argument(
         "--perf-report",
         type=Path,
@@ -126,14 +131,14 @@ def _compute(args: argparse.Namespace) -> int:
         modal_token_secret=cast(str, backend_resolved.get("modal_token_secret", "")),
         modal_gpu=cast(str, backend_resolved.get("modal_gpu", "")),
         sequences=parse_sequences(args.sequences, args.fasta),
-        storage=storage_settings(args),
+        storage=storage_settings(args, sqlite_default=SQLITE_PATH),
         perf_report=args.perf_report,
     )
     stats = run_inference(settings)
     print(
         f"\n{stats.computed} computed, {stats.skipped} already stored "
         f"({stats.n_sequences} sequence(s)); build reports with:\n"
-        f"  mutation_report.py {settings.storage.flags()} "
+        f"  peptides_report.py {settings.storage.flags()} "
         f"--model {settings.model}"
     )
     return 0

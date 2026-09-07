@@ -2,7 +2,12 @@ from pathlib import Path
 
 import pytest
 
-from esmlab.seqio import parse_header, parse_sequences, validate_sequence
+from esmlab.seqio import (
+    parse_header,
+    parse_sequences,
+    parse_whole_sequences,
+    validate_sequence,
+)
 
 
 def test_validate_sequence_normalizes_and_rejects() -> None:
@@ -107,3 +112,37 @@ def test_positional_sequences_cover_themselves() -> None:
     record = parse_sequences(["ACDEF"], [])[0]
 
     assert (record.name, record.start, record.stop) == ("seq_01", 1, 5)
+
+
+def test_plain_fasta_records_cover_their_whole_sequence(tmp_path: Path) -> None:
+    """A header that names no region is about every residue below it."""
+    fasta = tmp_path / "plain.fasta"
+    fasta.write_text(">spike\nACDEF\nGHIK\n>other\nMKTAY\n")
+
+    records = parse_whole_sequences([], [fasta])
+
+    assert [(r.name, r.sequence, r.start, r.stop) for r in records] == [
+        ("spike", "ACDEFGHIK", 1, 9),
+        ("other", "MKTAY", 1, 5),
+    ]
+
+
+def test_plain_header_keeps_its_pipes_and_carries_metadata(tmp_path: Path) -> None:
+    """An accession is one label, not a coordinate pair, and JSON still parses."""
+    fasta = tmp_path / "plain.fasta"
+    fasta.write_text('>sp|P12345|SPIKE|{"source": "UniProt"}\nACDEF\n')
+
+    record = parse_whole_sequences([], [fasta])[0]
+
+    assert record.name == "sp_P12345_SPIKE"
+    assert record.metadata == {"source": "UniProt"}
+
+
+def test_coordinates_in_a_plain_header_are_part_of_the_label(tmp_path: Path) -> None:
+    """The format read is the entry point's choice, never guessed per record."""
+    fasta = tmp_path / "plain.fasta"
+    fasta.write_text(">nsp1|2|4\nACDEF\n")
+
+    record = parse_whole_sequences([], [fasta])[0]
+
+    assert (record.name, record.start, record.stop) == ("nsp1_2_4", 1, 5)

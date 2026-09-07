@@ -1,10 +1,10 @@
 <!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Mutation report</title>
+<title>Peptide report</title>
 <!--
-  One entry's mutation report. Everything the page draws comes from the JSON
-  island below, which esmlab.mutation_render fills in; nothing else is
+  One peptide's report. Everything the page draws comes from the JSON
+  island below, which esmlab.peptides_render fills in; nothing else is
   substituted, so this file opens as-is with a hand-written payload.
 -->
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
@@ -235,7 +235,11 @@
     return tr;
   };
 
-  document.title = data.label + " - mutation report";
+  // Storage keeps a full ISO timestamp; a page only needs the minute, as the
+  // listing shows it.
+  const when = (iso) => iso.slice(0, 16).replace("T", " ");
+
+  document.title = data.label + " - peptide report";
   document.getElementById("title").textContent = data.label;
   // Positions below are the sub-sequence's own, 1..n - it is what the page is
   // about. Where it sits in the submitted sequence goes in the header line.
@@ -243,7 +247,7 @@
     " of " + data.full_sequence.length;
   document.getElementById("meta").innerHTML =
     scope + " &middot; model " + data.model +
-    " &middot; computed " + data.created_utc + " &middot; <code>" + data.key + "</code>";
+    " &middot; computed " + when(data.created_utc) + " &middot; <code>" + data.key + "</code>";
   // The region is shown inside its context, because the context is what the
   // model conditioned on: the flanks are why these logits mean anything.
   const flanks = document.getElementById("sequence");

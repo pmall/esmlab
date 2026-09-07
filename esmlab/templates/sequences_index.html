@@ -1,0 +1,165 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sequence reports</title>
+<!--
+  The listing page for one model's sequence reports, ordered by mean entropy so
+  the table is the comparison between sequences. Rows link to the `<key>.html`
+  pages written beside this file; the payload below is filled in by
+  esmlab.sequences_render. Its twin is peptides_index.html: the two share this
+  skeleton and differ only in the columns their own topic ranks on.
+-->
+<style>
+  :root {
+    color-scheme: light;
+    --surface: #fcfcfb;
+    --plane: #f9f9f7;
+    --ink: #0b0b0b;
+    --ink-2: #52514e;
+    --muted: #898781;
+    --grid: #e1e0d9;
+    --border: rgba(11, 11, 11, 0.10);
+    --link: #2a78d6;
+    --bar: #2a78d6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --surface: #1a1a19;
+      --plane: #0d0d0d;
+      --ink: #ffffff;
+      --ink-2: #c3c2b7;
+      --grid: #2c2c2a;
+      --border: rgba(255, 255, 255, 0.10);
+      --link: #3987e5;
+      --bar: #3987e5;
+    }
+  }
+  body {
+    margin: 0;
+    padding: 32px 24px 64px;
+    background: var(--plane);
+    color: var(--ink);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 1000px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .meta { color: var(--ink-2); margin: 0 0 24px; }
+  section { background: var(--surface); border: 1px solid var(--border);
+            border-radius: 8px; padding: 16px; }
+  /* The table stays inside the card whatever a label's length: it scrolls
+     here rather than spilling over the panel's edge. */
+  .scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+  th, td { padding: 6px 10px; text-align: left; vertical-align: baseline; }
+  td.number, th.number { text-align: right; white-space: nowrap; }
+  thead th { color: var(--muted); font-weight: 600; border-bottom: 1px solid var(--grid); }
+  tbody tr:hover { background: var(--plane); }
+  a { color: var(--link); }
+  .empty { color: var(--muted); margin: 0; }
+  /* A sanitized FASTA header is one long underscore-joined token, which no
+     browser breaks on its own; without this the row sets the table's width. */
+  td.label { overflow-wrap: anywhere; min-width: 220px; }
+  td.when { color: var(--ink-2); white-space: nowrap; }
+  /* The mean's bar is drawn against the uniform ceiling, so the column reads
+     as "how much freedom ESMC leaves" without the reader converting bits. The
+     cell carries the width: an auto-sized column would collapse the bar to
+     nothing, since the bar is all the cell holds. */
+  td.gauge { width: 120px; }
+  .gauge div { height: 6px; border-radius: 3px; background: var(--grid); }
+  .gauge div div { border-radius: 3px; background: var(--bar); }
+</style>
+
+<script type="application/json" id="payload">__PAYLOAD__</script>
+
+<main>
+  <h1 id="title"></h1>
+  <p class="meta" id="meta"></p>
+  <section>
+    <div class="scroll"><table id="entries"></table></div>
+    <p class="empty" id="empty" hidden>Nothing to report on.</p>
+  </section>
+</main>
+
+<script>
+  const data = JSON.parse(document.getElementById("payload").textContent);
+
+  const element = (tag, text) => {
+    const node = document.createElement(tag);
+    if (text !== undefined) node.textContent = text;
+    return node;
+  };
+
+  const cell = (tag, text, className) => {
+    const node = element(tag, text);
+    if (className) node.className = className;
+    return node;
+  };
+
+  // A windowed entry shows its coordinates rather than a bare count, so the
+  // listing distinguishes a 15-residue peptide from a window of a protein.
+  const span = (entry) => entry.length === entry.full_length
+    ? String(entry.length)
+    : entry.start + "-" + entry.stop + " of " + entry.full_length;
+
+  // Storage keeps a full ISO timestamp; a listing only needs the minute, and
+  // the rest wraps the column onto two lines.
+  const when = (iso) => iso.slice(0, 16).replace("T", " ");
+
+  const header = (columns) => {
+    const head = document.createElement("thead");
+    const row = document.createElement("tr");
+    for (const [name, className] of columns) row.appendChild(cell("th", name, className));
+    head.appendChild(row);
+    return head;
+  };
+
+  // The columns both listings share: the link, the residue span, and when the
+  // entry was computed. A topic adds its own ranking columns after these.
+  const rowFor = (entry) => {
+    const tr = document.createElement("tr");
+    const link = element("a", entry.label);
+    link.href = entry.key + ".html";
+    tr.appendChild(cell("td", undefined, "label")).appendChild(link);
+    tr.appendChild(cell("td", span(entry), "number"));
+    tr.appendChild(cell("td", when(entry.created_utc), "when"));
+    return tr;
+  };
+
+  const heading = data.model ? "Sequence reports - " + data.model : "Sequence reports";
+  document.title = heading;
+  document.getElementById("title").textContent = heading;
+  document.getElementById("meta").textContent =
+    data.entries.length + " sequence(s), lowest mean entropy first; ceiling " +
+    data.entropy_limit.toFixed(3) + " bits (uniform over 20 residues)";
+
+  const table = document.getElementById("entries");
+  if (data.entries.length === 0) {
+    table.hidden = true;
+    document.getElementById("empty").hidden = false;
+  }
+  table.appendChild(header([
+    ["label"], ["residues", "number"], ["computed"], ["mean", "number"], [""],
+    ["median", "number"], ["min", "number"], ["max", "number"],
+  ]));
+
+  const bar = (mean) => {
+    const track = element("div");
+    const fill = element("div");
+    fill.style.width = Math.min(100, (mean / data.entropy_limit) * 100) + "%";
+    track.appendChild(fill);
+    return track;
+  };
+
+  const body = document.createElement("tbody");
+  for (const entry of data.entries) {
+    const tr = rowFor(entry);
+    tr.appendChild(cell("td", entry.mean.toFixed(3), "number"));
+    tr.appendChild(cell("td", undefined, "gauge")).appendChild(bar(entry.mean));
+    tr.appendChild(cell("td", entry.median.toFixed(3), "number"));
+    tr.appendChild(cell("td", entry.minimum.toFixed(3), "number"));
+    tr.appendChild(cell("td", entry.maximum.toFixed(3), "number"));
+    body.appendChild(tr);
+  }
+  table.appendChild(body);
+</script>

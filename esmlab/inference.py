@@ -51,7 +51,7 @@ class InferenceSettings:
 
     Bundles the selected backend/model with its resolved backend parameters,
     the parsed input sequences, the resolved storage configuration, and the
-    longitudinal perf-report CSV path. Built by the ``mutation_logits`` script.
+    longitudinal perf-report CSV path. Built by the ``peptides_logits`` script.
     """
 
     backend: str
@@ -118,7 +118,7 @@ def run_inference(settings: InferenceSettings) -> InferenceStats:
     each sequence asks storage first and only calls the model on a miss. A
     :class:`tqdm` progress bar tracks sequence-level progress; on completion a
     perf summary is printed and one row appended to the perf-report CSV.
-    Entrypoint called by the ``mutation_logits`` script.
+    Entrypoint called by the ``peptides_logits`` script.
     """
     started_utc = datetime.now(UTC).isoformat()
     storage = open_storage(settings.storage)

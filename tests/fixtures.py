@@ -24,7 +24,7 @@ def make_result(
 
     ``rows`` must have one row per scored residue, the region defaulting to the
     whole sequence; the vocab is the stub's (:data:`STUB_VOCAB`). Used by the
-    pure-math tests in :mod:`tests.test_mutation_scoring` to drive the scoring
+    pure-math tests in :mod:`tests.test_peptides_scoring` to drive the scoring
     functions without a model.
     """
     stop = len(sequence) if stop is None else stop

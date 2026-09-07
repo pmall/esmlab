@@ -1,6 +1,7 @@
-"""Build mutation reports from logits already persisted by mutation_logits.py.
+"""Build peptide reports from logits already persisted by peptides_logits.py.
 
-A consuming phase over what ``mutation_logits.py`` stored: it reads a storage
+A consuming phase over what ``peptides_logits.py`` stored in
+``data/peptides.sqlite``: it reads a storage
 and never constructs a connector, so it needs no credentials, no GPU and no
 model. Re-running with a different ``--threshold`` or ``--top`` is pure CPU
 work over arrays that are already stored; another analysis of the same logits
@@ -8,19 +9,21 @@ is a sibling script rather than another model run.
 
 It iterates the storage rather than an input file — the store is the source of
 truth for what has been computed — and renders every entry held for ``--model``.
-Each entry becomes a self-contained ``<out>/<model>/<key>.html`` page, keyed by
-the sequence's storage digest rather than by its label, beside an
-``index.html`` linking that model's keys back to labels for humans. The model
-is in the path because the key is the sequence's alone, so two models would
-otherwise overwrite each other. Open a model's ``index.html`` to read a run; a
-page needs a network connection the first time, for the charting library it
-loads from a CDN.
+Each entry becomes a self-contained ``<out>/peptides/<model>/<key>.html`` page,
+keyed by the sequence's storage digest rather than by its label, beside an
+``index.html`` linking that model's keys back to labels for humans. ``--out`` is
+the reports root every topic shares (default ``data/reports``); the topic and
+the model are in the path below it because the key is the sequence's alone, so
+neither another topic nor another model may share a directory with it. Open a
+model's ``index.html`` to read a run; a page needs a network connection the
+first time, for the charting library it loads from a CDN.
 
 ``--model`` is optional: the default renders every model the store holds, since
 reporting costs no model time. Naming a model with nothing stored is a CLI
 error listing the models that do have entries.
 
-Takes the same storage flags as ``mutation_logits.py``.
+Takes the same storage flags as ``peptides_logits.py``, and reads by default
+the same ``data/peptides.sqlite`` it writes.
 """
 
 import argparse
@@ -28,11 +31,15 @@ import sys
 from pathlib import Path
 
 from esmlab.connectors.base import CANONICAL_SEQUENCE_MODELS
-from esmlab.mutation_report import ReportSettings, run_report
 from esmlab.params import load_env
+from esmlab.peptides_report import ReportSettings, run_report
 from esmlab.storage import add_storage_arguments, storage_settings
 
 SUMMARY = __doc__.partition("\n\n")[0] if __doc__ else ""
+
+# The store this topic writes and reads. One database per topic, so a report
+# covers this topic's runs and nothing else.
+SQLITE_PATH = Path("data/peptides.sqlite")
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -40,7 +47,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     No backend flags and no model credentials: this stage reads stored arrays
     and never constructs a connector. The storage flags are the same ones
-    ``mutation_logits`` declares, so a run's printed command line is copyable.
+    ``peptides_logits`` declares, so a run's printed command line is copyable.
     """
     # argparse takes the summary line only: the rest of the module docstring
     # is for someone reading the file, and would swamp --help.
@@ -51,12 +58,12 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Report only on entries stored for this model (default: every model)",
     )
-    add_storage_arguments(parser)
+    add_storage_arguments(parser, sqlite_default=SQLITE_PATH)
     parser.add_argument(
         "--out",
         type=Path,
         default=Path("data/reports"),
-        help="Directory for report artifacts (default: data/reports)",
+        help="Root for report artifacts, one directory per topic (default: data/reports)",
     )
     parser.add_argument(
         "--threshold",
@@ -84,7 +91,7 @@ def _report(args: argparse.Namespace) -> int:
     load_env()
     settings = ReportSettings(
         model=args.model,
-        storage=storage_settings(args),
+        storage=storage_settings(args, sqlite_default=SQLITE_PATH),
         out_dir=args.out,
         threshold=args.threshold,
         top_k=args.top_k,

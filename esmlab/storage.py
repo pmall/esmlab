@@ -38,8 +38,11 @@ One ``sequence_logits`` table, primary key ``(model, sequence_key)``.
 Scope, writes, backends
 -----------------------
 Every implementation binds to one resource, and that resource is the only
-scope: two stores pointed at the same database are the same store. A ``stub``
-run therefore needs its own database (``--sqlite-path
+scope: two stores pointed at the same database are the same store, and a store
+holds exactly the entries some run put there. That is what makes a store the
+unit a topic reports on - each topic keeps its own database, named by the
+script that writes it, so a report covers that topic's runs and nothing else.
+A ``stub`` run needs its own database too (``--sqlite-path
 data/logits-stub.sqlite3``), or its fake logits will be served to a later real
 run. No backend is special-cased in code.
 
@@ -51,6 +54,8 @@ migration step.
 :class:`LogitsStorage` is the Protocol; :class:`SqliteLogitsStorage` and
 :class:`PostgresLogitsStorage` are the implementations, sharing everything but
 paramstyle, blob type and connection setup via :class:`_SqlLogitsStorage`.
+:func:`select_models` is where every consuming stage agrees on which of the
+store's models one run covers.
 """
 
 import argparse
@@ -83,23 +88,30 @@ type Metadata = Mapping[str, JsonValue]
 
 TABLE: LiteralString = "sequence_logits"
 
-DEFAULT_SQLITE_PATH = Path("data/mutations.sqlite3")
 
-SQLITE_PARAMS: tuple[ParamSpec, ...] = (
+def sqlite_params(default: Path) -> tuple[ParamSpec, ...]:
+    """The SQLite flags, defaulting to ``default``.
+
+    A function and not a constant because the default is the caller's: a store
+    is the unit a topic reports on, so each script names the database its own
+    topic writes and reads.
+    """
     # A file path, not a credential: no env fallback. It stays a ParamSpec so
     # resolve_params still rejects it on a postgres run.
-    ParamSpec(
-        flag="--sqlite-path",
-        dest="sqlite_path",
-        env="",
-        type=Path,
-        default=DEFAULT_SQLITE_PATH,
-        help=(
-            f"SQLite database file (default: {DEFAULT_SQLITE_PATH}). "
-            "Use a separate one for stub runs; the database is the only scope."
+    return (
+        ParamSpec(
+            flag="--sqlite-path",
+            dest="sqlite_path",
+            env="",
+            type=Path,
+            default=default,
+            help=(
+                f"SQLite database file (default: {default}). "
+                "Use a separate one for stub runs; the database is the only scope."
+            ),
         ),
-    ),
-)
+    )
+
 
 POSTGRES_PARAMS: tuple[ParamSpec, ...] = (
     ParamSpec(
@@ -140,14 +152,12 @@ POSTGRES_PARAMS: tuple[ParamSpec, ...] = (
     ),
 )
 
-STORAGE_PARAMS: dict[str, tuple[ParamSpec, ...]] = {
-    "sqlite": SQLITE_PARAMS,
-    "postgres": POSTGRES_PARAMS,
-}
-STORAGES = tuple(STORAGE_PARAMS.keys())
-ALL_STORAGE_PARAMS: tuple[ParamSpec, ...] = tuple(
-    spec for specs in STORAGE_PARAMS.values() for spec in specs
-)
+STORAGES = ("sqlite", "postgres")
+
+
+def storage_params(sqlite_default: Path) -> dict[str, tuple[ParamSpec, ...]]:
+    """Every storage's parameters, by storage name, for one script's SQLite default."""
+    return {"sqlite": sqlite_params(sqlite_default), "postgres": POSTGRES_PARAMS}
 
 
 @dataclass(frozen=True)
@@ -535,15 +545,19 @@ class StorageSettings:
         )
 
 
-def add_storage_arguments(parser: argparse.ArgumentParser) -> None:
+def add_storage_arguments(
+    parser: argparse.ArgumentParser, *, sqlite_default: Path
+) -> None:
     """Declares ``--storage`` and every backend's flags on a script's parser.
 
-    Shared by both entrypoints so the two stages always accept the same storage
-    vocabulary and a command line copied between them keeps working. Defaults
-    of ``None`` let :func:`resolve_params` distinguish "not given" from "given".
+    Shared by every entrypoint so all stages accept the same storage vocabulary
+    and a command line copied between them keeps working. Defaults of ``None``
+    let :func:`resolve_params` distinguish "not given" from "given"; the one
+    exception is ``sqlite_default``, which a script passes because the database
+    it reads and writes is its topic's.
 
-    ``--storage`` selects sqlite (the default, at :data:`DEFAULT_SQLITE_PATH`)
-    or postgres. SQLite takes only ``--sqlite-path``; postgres takes its
+    ``--storage`` selects sqlite (the default, at ``sqlite_default``) or
+    postgres. SQLite takes only ``--sqlite-path``; postgres takes its
     connection parameters, each with a ``POSTGRES_*`` env fallback listed in
     ``.env.example``.
     """
@@ -553,25 +567,30 @@ def add_storage_arguments(parser: argparse.ArgumentParser) -> None:
         default="sqlite",
         help="Storage backend holding computed logits (default: sqlite)",
     )
-    for spec in ALL_STORAGE_PARAMS:
-        parser.add_argument(
-            spec.flag,
-            dest=spec.dest,
-            default=None,
-            type=spec.type,
-            choices=spec.choices,
-            help=spec.help,
-        )
+    for specs in storage_params(sqlite_default).values():
+        for spec in specs:
+            parser.add_argument(
+                spec.flag,
+                dest=spec.dest,
+                default=None,
+                type=spec.type,
+                choices=spec.choices,
+                help=spec.help,
+            )
 
 
-def storage_settings(args: argparse.Namespace) -> StorageSettings:
+def storage_settings(
+    args: argparse.Namespace, *, sqlite_default: Path
+) -> StorageSettings:
     """Resolves the parsed namespace into a :class:`StorageSettings`.
 
-    Delegates to :func:`resolve_params`, which applies the env fallbacks and
-    rejects a flag belonging to the storage that was *not* selected — so a
-    stale ``--sqlite-path`` on a postgres run is an error rather than being
-    silently ignored. Raises :class:`ValueError`, which both scripts surface as
-    an argparse error.
+    ``sqlite_default`` is the same one the script gave
+    :func:`add_storage_arguments`, so what ``--help`` printed is what an
+    omitted flag resolves to. Delegates to :func:`resolve_params`, which
+    applies the env fallbacks and rejects a flag belonging to the storage that
+    was *not* selected — so a stale ``--sqlite-path`` on a postgres run is an
+    error rather than being silently ignored. Raises :class:`ValueError`, which
+    every script surfaces as an argparse error.
     """
     cli_values: dict[str, ParamValue | None] = {
         "sqlite_path": args.sqlite_path,
@@ -582,11 +601,13 @@ def storage_settings(args: argparse.Namespace) -> StorageSettings:
         "postgres_password": args.postgres_password,
     }
     resolved = resolve_params(
-        STORAGE_PARAMS[args.storage], cli_values, label=f"storage {args.storage!r}"
+        storage_params(sqlite_default)[args.storage],
+        cli_values,
+        label=f"storage {args.storage!r}",
     )
     return StorageSettings(
         storage=args.storage,
-        sqlite_path=cast(Path, resolved.get("sqlite_path", DEFAULT_SQLITE_PATH)),
+        sqlite_path=cast(Path, resolved.get("sqlite_path", sqlite_default)),
         postgres_host=cast(str, resolved.get("postgres_host", "")),
         postgres_port=cast(int, resolved.get("postgres_port", 0)),
         postgres_dbname=cast(str, resolved.get("postgres_dbname", "")),
@@ -612,3 +633,34 @@ def open_storage(settings: StorageSettings) -> LogitsStorage:
             raise ValueError(
                 f"Unknown storage {settings.storage!r}; expected one of {STORAGES}"
             )
+
+
+def select_models(storage: LogitsStorage, model: str | None) -> list[str]:
+    """Which models a consuming stage runs over, or a :class:`ValueError` saying why none.
+
+    ``None`` means every model the store holds: consuming a store costs no
+    model time, so the useful default is "everything you have". Asking for a
+    model with nothing stored is still an error, since it is almost always a
+    compute run that used a different one, and the message names what the store
+    does hold because the useful next command is the same one with a different
+    ``--model`` or with none at all.
+
+    Shared by every report topic, so they agree on the default and fail
+    identically.
+    """
+    stored = storage.models()
+    if not stored:
+        raise ValueError(
+            "Storage holds no entries at all, so there is nothing to report"
+        )
+
+    names = [name for name, _ in stored]
+    if model is None:
+        return names
+    if model not in names:
+        held = ", ".join(f"{name} ({count})" for name, count in stored)
+        raise ValueError(
+            f"Storage holds no entries for model {model!r}; it holds: {held}. "
+            f"Re-run with a --model it holds, or without --model for all of them."
+        )
+    return [model]

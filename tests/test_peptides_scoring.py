@@ -1,33 +1,15 @@
-import math
-
 import numpy as np
 import pytest
 
 from esmlab.amino_acids import VALID_AMINO_ACIDS
-from esmlab.mutation_scoring import (
+from esmlab.peptides_scoring import (
     deleterious_fraction_per_position,
-    entropy_per_position,
     llr_matrix,
     rank_substitutions,
-    uniform_entropy_bits,
 )
-from tests.fixtures import make_result, one_hot_rows, uniform_rows
+from tests.fixtures import make_result
 
 VOCAB = len(VALID_AMINO_ACIDS)
-
-
-def test_uniform_entropy_matches_log2_of_alphabet() -> None:
-    """Uniform-over-k rows must yield entropy log2(k) at every position."""
-    for alphabet_size in (2, 4, 8, 16, 20):
-        result = make_result("AAA", uniform_rows("AAA", alphabet_size))
-        entropies = entropy_per_position(result)
-        assert entropies == pytest.approx([math.log2(alphabet_size)] * 3)
-
-
-def test_sharp_distribution_has_zero_entropy() -> None:
-    """A one-hot distribution (all mass on the wildtype) has zero entropy."""
-    result = make_result("AC", one_hot_rows("AC", {}))
-    assert entropy_per_position(result) == pytest.approx([0.0, 0.0])
 
 
 def test_llr_wildtype_column_is_zero_and_preferred_alternative_is_positive() -> None:
@@ -70,8 +52,3 @@ def test_rank_substitutions_orders_descending_and_skips_wildtype() -> None:
     assert all(substitution[1] != substitution[2] for substitution in ranked)
     scores = [substitution[3] for substitution in ranked]
     assert scores == sorted(scores, reverse=True)
-
-
-def test_uniform_entropy_bits_helper() -> None:
-    """The reference helper returns log2 of the alphabet size."""
-    assert uniform_entropy_bits(20) == math.log2(20)
