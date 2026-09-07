@@ -12,6 +12,14 @@ BIOHUB_MODEL_NAMES = {
     "esmc-6b": "esmc-6b-2024-12",
 }
 
+# Most masked residues this backend will score in one call. Every mask is a
+# separate full-length request, so a masked sweep costs L*L tokens for a
+# length-L sequence: a 500-residue protein is a third of the daily credit
+# budget, spent before anything comes back. A peptide never needs more than a
+# handful of masks, so a request for more is a whole-sequence job pointed at
+# the wrong entrypoint - use sequence_logits, which is one request.
+MAX_MASKED_RESIDUES = 20
+
 PARAMS: tuple[ParamSpec, ...] = (
     ParamSpec(
         flag="--biohub-api-key",
@@ -48,6 +56,10 @@ class BiohubConnector:
     ) -> SequenceLogits:
         """Scores the region's leave-one-out masks via concurrent Platform requests.
 
+        Refuses a region longer than :data:`MAX_MASKED_RESIDUES` before making
+        any request, because the cost is quadratic and paid before anything
+        comes back.
+
         Each residue of ``start``..``stop`` is replaced in turn by the SDK
         ``"_"`` mask placeholder;
         the resulting masked strings are dispatched in parallel through the
@@ -56,6 +68,18 @@ class BiohubConnector:
         ``i`` of variant ``i`` is the prediction at the masked residue (+1
         skips the BOS token). Returns a :class:`SequenceLogits`.
         """
+        # Both guards run before the deferred imports: rejecting a bad request
+        # should not cost a torch import.
+        check_region(sequence, start, stop)
+        if stop - start + 1 > MAX_MASKED_RESIDUES:
+            raise ValueError(
+                f"region {start}-{stop} asks for {stop - start + 1} masks, over "
+                f"the Biohub Platform limit of {MAX_MASKED_RESIDUES}: each mask "
+                f"is a separate full-length request, so this would cost "
+                f"{(stop - start + 1) * len(sequence)} tokens. Use "
+                "sequence_logits for a whole sequence, or score a shorter region."
+            )
+
         import torch
         from esm.sdk import parallel_executor
         from esm.sdk.api import ESMProtein, ESMProteinError, LogitsConfig
@@ -70,13 +94,22 @@ class BiohubConnector:
                 raise output
             return output
 
-        check_region(sequence, start, stop)
         scored = range(start, stop + 1)
         masked = [
             sequence[: position - 1] + "_" + sequence[position:] for position in scored
         ]
         with parallel_executor(show_progress=False) as executor:
             outputs = executor.execute_batch(user_func=fetch_logits, sequence=masked)
+
+        # The executor returns failures in place rather than raising, so a
+        # refusal would otherwise surface as an attribute error on the first
+        # "logits" read rather than as what the Platform actually said.
+        failures = [output for output in outputs if isinstance(output, Exception)]
+        if failures:
+            raise RuntimeError(
+                f"{len(failures)}/{len(outputs)} Biohub Platform requests failed; "
+                f"first failure: {failures[0]}"
+            )
 
         # Row i of variant i is the prediction at its masked residue; +1 skips BOS.
         rows = torch.stack(
@@ -91,6 +124,40 @@ class BiohubConnector:
             sequence=sequence,
             start=start,
             stop=stop,
+            logits=rows.float().cpu().numpy().astype(np.float32),
+            vocab=get_esmc_model_tokenizers().get_vocab(),
+        )
+
+    def sequence_logits(self, sequence: str) -> SequenceLogits:
+        """Scores the whole sequence with one unmasked request.
+
+        One request instead of one per residue, and no executor to manage:
+        the Platform bills per token, so this is the difference between L and
+        L*L tokens for a length-L sequence - about 0.03 credits for a 300-mer
+        against 9. Rows ``1..L`` of the response are the residues; row 0 is
+        BOS.
+        """
+        import torch
+        from esm.sdk.api import ESMProtein, ESMProteinError, LogitsConfig
+        from esm.tokenization import get_esmc_model_tokenizers
+
+        # The SDK returns refusals rather than raising them, here as in the
+        # masked path; one request means there is no batch to summarize.
+        protein_tensor = self._client.encode(ESMProtein(sequence=sequence))
+        if isinstance(protein_tensor, ESMProteinError):
+            raise protein_tensor
+        output = self._client.logits(protein_tensor, LogitsConfig(sequence=True))
+        if isinstance(output, ESMProteinError):
+            raise output
+
+        sequence_logits = output.logits.sequence if output.logits else None
+        assert sequence_logits is not None, "LogitsConfig(sequence=True) returned none"
+        # Row 0 is BOS and row L+1 is EOS; the residues sit between them.
+        rows: torch.Tensor = sequence_logits[0, 1 : len(sequence) + 1]
+        return SequenceLogits(
+            sequence=sequence,
+            start=1,
+            stop=len(sequence),
             logits=rows.float().cpu().numpy().astype(np.float32),
             vocab=get_esmc_model_tokenizers().get_vocab(),
         )

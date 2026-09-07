@@ -18,6 +18,24 @@ import numpy.typing as npt
 CANONICAL_SEQUENCE_MODELS = ("esmc-300m", "esmc-600m", "esmc-6b")
 CANONICAL_STRUCTURE_MODELS = ("esmfold2", "esmfold2-fast")
 
+# How a set of rows was read out of the model. The two are different
+# measurements, not two speeds for one measurement, so a stored entry says
+# which one produced it and a report never mixes them.
+#
+# - "masked" replaces each scored residue with <mask> in turn, so a row is a
+#   genuine prediction from context alone: L forward passes, and the entropy
+#   is how constrained that site is. The peptides topic pays this, because a
+#   peptide is short and a mutation score has to mean something per position.
+# - "single-pass" runs the unmasked sequence once and keeps every row. The
+#   model can see the residue it predicts, so the distribution leans toward
+#   reproducing it and entropies come out slightly low; measured against
+#   masked rows on three proteins (esmc-300m), mean entropy fell by 0.02-0.16
+#   bits at a rank correlation of 0.84-0.96, with a fifth of positions moving
+#   more than 0.5 bits on one of them. The sequences topic takes that trade:
+#   whole proteins at one pass each instead of L, which is the difference
+#   between scoring a proteome and scoring six sequences.
+SCORING_METHODS = ("masked", "single-pass")
+
 
 @dataclass(frozen=True)
 class SequenceLogits:
@@ -62,12 +80,15 @@ def check_region(sequence: str, start: int, stop: int) -> None:
 
 
 class ModelConnector(Protocol):
-    """Backend contract: mask each residue, read the logits, plus memory reporting.
+    """Backend contract: the two ways to read logits, plus memory reporting.
 
-    Every backend (stub, local, biohub, modal) implements
-    :meth:`masked_sequence_logits`, masking only the region asked for.
-    Connectors only compute: persisting the result is the caller's job, via
-    :mod:`esmlab.storage`.
+    Every backend (stub, local, biohub, modal) implements both readouts.
+    :meth:`masked_sequence_logits` masks the region asked for, one forward pass
+    per residue; :meth:`sequence_logits` runs a single pass over the unmasked
+    sequence and keeps every row. Which one a topic wants is a question about
+    the number it reports, not about the backend - see
+    :data:`SCORING_METHODS`. Connectors only compute: persisting the result is
+    the caller's job, via :mod:`esmlab.storage`.
     :meth:`peak_memory_bytes` exposes the peak memory of the last
     call where the backend can observe it (CUDA on the local backend); it
     returns ``None`` for backends with no observable memory (stub, biohub, modal,
@@ -81,6 +102,17 @@ class ModelConnector(Protocol):
 
         ``sequence`` is always passed whole - it is the context - while
         ``start``/``stop`` say which residues to mask and score.
+        """
+        ...
+
+    def sequence_logits(self, sequence: str) -> SequenceLogits:
+        """Single-pass logits for every residue of ``sequence``, nothing masked.
+
+        One forward pass returns a distribution at every position at once, so
+        the whole sequence costs one pass rather than one per residue. The
+        model sees the residue it is predicting, which is what makes this an
+        approximation rather than a cheaper route to the same numbers; see
+        :data:`SCORING_METHODS`. The region is always ``1..len(sequence)``.
         """
         ...
 

@@ -200,6 +200,36 @@ class LocalConnector:
             vocab=self._tokenizer.get_vocab(),
         )
 
+    def sequence_logits(self, sequence: str) -> SequenceLogits:
+        """Runs one unmasked forward pass and keeps every residue's row.
+
+        The tokenized sequence carries a leading ``<cls>`` and a trailing
+        ``<eos>``, so rows ``1..L`` of the returned ``[1, L+2, V]`` tensor are
+        the residues. Nothing is masked: this is the whole sequence in one
+        pass, which is what the sequences topic trades accuracy for.
+        """
+        torch = self._torch
+        token_ids = [int(token_id) for token_id in self._tokenizer(sequence).input_ids]
+        input_ids = torch.tensor([token_ids], dtype=torch.long, device=self._device)
+        if self._device == "cuda":
+            torch.cuda.reset_peak_memory_stats(self._device)
+        with torch.inference_mode():
+            output = self._model(input_ids=input_ids)
+        self._last_peak_memory_bytes = (
+            int(torch.cuda.max_memory_allocated(self._device))
+            if self._device == "cuda"
+            else None
+        )
+        # Row 0 is <cls> and row L+1 is <eos>; the residues sit between them.
+        rows = output.logits[0, 1 : len(sequence) + 1]
+        return SequenceLogits(
+            sequence=sequence,
+            start=1,
+            stop=len(sequence),
+            logits=rows.float().cpu().numpy().astype(np.float32),
+            vocab=self._tokenizer.get_vocab(),
+        )
+
     def peak_memory_bytes(self) -> int | None:
         """Peak CUDA memory of the last forward pass, or ``None`` on CPU.
 

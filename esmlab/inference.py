@@ -11,10 +11,17 @@ An entry belongs to the backend that produced it, so pointing a second backend
 at the same store computes its own rows beside the first's rather than reading
 them.
 
-A record is scored only at the residues its header named. The whole sequence
-still goes into every forward pass - it is the context that makes the
-predictions worth anything - but masking runs over that region alone, so a
-15-residue peptide inside a 500-residue protein costs 15 passes rather than 500.
+How the rows are read is the caller's choice, not this module's: ``method``
+selects between the masked sweep and the single unmasked pass (see
+:data:`~esmlab.connectors.base.SCORING_METHODS`), and everything downstream of
+the connector call is identical either way.
+
+Under ``"masked"`` a record is scored only at the residues its header named.
+The whole sequence still goes into every forward pass - it is the context that
+makes the predictions worth anything - but masking runs over that region alone,
+so a 15-residue peptide inside a 500-residue protein costs 15 passes rather
+than 500. Under ``"single-pass"`` there is one pass per record and the region
+is the whole sequence.
 """
 
 import csv
@@ -35,6 +42,7 @@ PERF_COLUMNS = (
     "started_utc",
     "backend",
     "model",
+    "method",
     "n_sequences",
     "total_residues",
     "init_duration_s",
@@ -54,11 +62,15 @@ class InferenceSettings:
 
     Bundles the selected backend/model with its resolved backend parameters,
     the parsed input sequences, the resolved storage configuration, and the
-    longitudinal perf-report CSV path. Built by the ``peptides_logits`` script.
+    longitudinal perf-report CSV path. ``method`` is one of
+    :data:`~esmlab.connectors.base.SCORING_METHODS` and is fixed by the script:
+    each topic is one measurement, so it is not a per-run flag. Built by the
+    ``peptides_logits`` and ``sequences_logits`` scripts.
     """
 
     backend: str
     model: str
+    method: str
     device: str
     batch_size: int
     biohub_api_key: str
@@ -180,8 +192,12 @@ def _compute_missing(
                 continue
 
             start = perf_counter()
-            result = connector.masked_sequence_logits(
-                named.sequence, named.start, named.stop
+            result = (
+                connector.masked_sequence_logits(
+                    named.sequence, named.start, named.stop
+                )
+                if settings.method == "masked"
+                else connector.sequence_logits(named.sequence)
             )
             duration = perf_counter() - start
             storage.save(
@@ -272,7 +288,8 @@ def _print_perf_summary(
     and the peak process RSS plus the max GPU peak across sequences.
     """
     print(
-        f"\n=== performance ({settings.backend}/{settings.model}) ===\n"
+        f"\n=== performance ({settings.backend}/{settings.model}, "
+        f"{settings.method}) ===\n"
         f"sequences: {agg.n_sequences} ({agg.total_residues} residues computed)\n"
         f"init: {init_duration:.3f}s, inference: {agg.inference_duration:.3f}s, "
         f"mean: {agg.mean_ms_per_residue:.3f} ms/residue\n"
@@ -302,6 +319,7 @@ def _append_perf_csv(
         started_utc,
         settings.backend,
         settings.model,
+        settings.method,
         str(agg.n_sequences),
         str(agg.total_residues),
         f"{init_duration:.6f}",

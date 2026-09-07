@@ -57,7 +57,7 @@ these layers.
   stored result, so the same model run through two backends is two entries and
   two reports, comparable side by side. Canonical model ids are grouped by
   task in `connectors/base.py`: `CANONICAL_SEQUENCE_MODELS` (`esmc-300m` /
-  `esmc-600m` / `esmc-6b`, masked logits) and `CANONICAL_STRUCTURE_MODELS`
+  `esmc-600m` / `esmc-6b`, sequence logits) and `CANONICAL_STRUCTURE_MODELS`
   (`esmfold2` / `esmfold2-fast`, structure prediction — not yet wired to a
   connector). Each backend maps a canonical id to its own scheme (HF repo,
   dated Biohub name).
@@ -87,7 +87,7 @@ Everything below the script layer is topic-agnostic:
 
 | module | does |
 | --- | --- |
-| `esmlab/inference.py` | compute phase for any topic built on masked logits: orchestrates a connector and a storage |
+| `esmlab/inference.py` | compute phase for any topic built on sequence logits: orchestrates a connector and a storage, in whichever readout the script asks for |
 | `esmlab/connectors/` | model access |
 | `esmlab/storage.py` | persistence, and which backend/model pairs a consuming phase covers |
 | `esmlab/params.py`, `esmlab/seqio.py` | CLI parameters, sequence input |
@@ -103,8 +103,16 @@ what it writes, and its knobs. This table says only which script to open.
 | --- | --- | --- | --- |
 | `scripts/peptides_logits.py` | compute | peptides | masked logits for the sub-sequence each FASTA header names |
 | `scripts/peptides_report.py` | report | peptides | per-position entropy, substitution LLR matrix and rankings |
-| `scripts/sequences_logits.py` | compute | sequences | masked logits for whole sequences, from a FASTA with no coordinates |
+| `scripts/sequences_logits.py` | compute | sequences | single-pass logits for whole sequences, from a FASTA with no coordinates |
 | `scripts/sequences_report.py` | report | sequences | per-position entropy over the whole sequence, and an index ranking sequences |
+
+A topic also owns how it reads the model, which is why a store belongs to one
+topic and never holds both: `peptides_logits.py` masks each scored residue in
+turn (L passes, a genuine prediction per position, affordable because a peptide
+is short), while `sequences_logits.py` takes one unmasked pass per sequence and
+keeps every row (1 pass, entropies that run slightly low, affordable for whole
+proteins). `SCORING_METHODS` in `connectors/base.py` states the trade with
+numbers; every backend implements both readouts.
 
 A topic owns its store: `peptides_logits.py` writes `data/peptides.sqlite` and
 `sequences_logits.py` writes `data/sequences.sqlite`, each report reading the

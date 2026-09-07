@@ -14,17 +14,22 @@ OTHER_SEQUENCE = "MKTAYIAKQRQISFVK"
 
 
 def _settings(
-    tmp_path: Path, sequences: list[NamedSequence] | None = None
+    tmp_path: Path,
+    sequences: list[NamedSequence] | None = None,
+    *,
+    method: str = "masked",
 ) -> InferenceSettings:
     """Builds an :class:`InferenceSettings` wired to the stub backend.
 
     The stub needs no credentials, so the backend fields are blanked. The
     SQLite file and the perf CSV both live under ``tmp_path`` so tests never
-    touch the real ``data/`` tree.
+    touch the real ``data/`` tree. ``method`` picks the readout the stage asks
+    the connector for, defaulting to the masked sweep.
     """
     return InferenceSettings(
         backend="stub",
         model="esmc-600m",
+        method=method,
         device="",
         batch_size=0,
         biohub_api_key="",
@@ -40,6 +45,39 @@ def _settings(
 def _perf_rows(path: Path) -> list[dict[str, str]]:
     with path.open(newline="") as csv_file:
         return list(csv.DictReader(csv_file))
+
+
+class _RecordingConnector:
+    """Stub connector that notes which readout it was asked for.
+
+    The stub returns the same rows either way, so which call the compute stage
+    makes is the only observable difference between the two methods.
+    """
+
+    def __init__(self, calls: list[str]) -> None:
+        self._calls = calls
+        self._stub = StubConnector("esmc-600m")
+
+    def masked_sequence_logits(self, sequence: str, start: int, stop: int):
+        self._calls.append("masked")
+        return self._stub.masked_sequence_logits(sequence, start, stop)
+
+    def sequence_logits(self, sequence: str):
+        self._calls.append("single-pass")
+        return self._stub.sequence_logits(sequence)
+
+    def peak_memory_bytes(self) -> None:
+        return None
+
+
+def _record_connector_calls(monkeypatch) -> list[str]:
+    """Points the compute stage at a :class:`_RecordingConnector`, returning its log."""
+    calls: list[str] = []
+    monkeypatch.setattr(
+        "esmlab.inference.get_connector",
+        lambda *args, **kwargs: _RecordingConnector(calls),
+    )
+    return calls
 
 
 def test_run_stores_one_entry_per_sequence(tmp_path: Path) -> None:
@@ -196,7 +234,7 @@ def test_perf_summary_is_printed(tmp_path: Path, capsys) -> None:
     run_inference(_settings(tmp_path))
 
     out = capsys.readouterr().out
-    assert "=== performance (stub/esmc-600m) ===" in out
+    assert "=== performance (stub/esmc-600m, masked) ===" in out
     assert "1 computed / 0 already stored" in out
     assert "GPU peak: n/a" in out
 
@@ -220,3 +258,34 @@ def test_header_metadata_reaches_storage(tmp_path: Path) -> None:
     )
     assert stored.label == "stat1"
     assert stored.metadata == {"source": "UniProt:P12345", "targets": ["P11111"]}
+
+
+def test_method_selects_which_readout_the_connector_is_asked_for(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """``method`` picks the connector call, and the perf row records which.
+
+    The stub returns the same rows either way, so the branch is only observable
+    by watching which method the stage calls - which is the point: everything
+    downstream of the connector is identical, and the choice belongs to the
+    script that owns the topic.
+    """
+    calls = _record_connector_calls(monkeypatch)
+
+    run_inference(_settings(tmp_path, method="single-pass"))
+    assert calls == ["single-pass"]
+
+    rows = _perf_rows(tmp_path / "performance.csv")
+    assert rows[0]["method"] == "single-pass"
+
+
+def test_masked_is_the_readout_the_peptides_topic_asks_for(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The other branch, so neither method is wired to the wrong call."""
+    calls = _record_connector_calls(monkeypatch)
+
+    run_inference(_settings(tmp_path, method="masked"))
+
+    assert calls == ["masked"]
+    assert _perf_rows(tmp_path / "performance.csv")[0]["method"] == "masked"

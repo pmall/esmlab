@@ -127,14 +127,14 @@ def _connector_for(model: str) -> LocalConnector:
 
 
 def _build_app(gpu: str, model: str):
-    """Constructs the Modal ``App``/image and the remote ``masked_logits`` worker.
+    """Constructs the Modal ``App``/image and its two remote logits workers.
 
     The image installs ``esm`` plus its fused CUDA kernels and this repo's
     ``esmlab`` source so the worker can call :func:`_connector_for`. The worker
     is pinned to one ``model`` (so its HuggingFace-cache Volume is per-model)
     and runs on a ``gpu`` GPU with a 5-minute scaledown window to keep the
-    checkpoint warm between calls. Returns ``(app, masked_logits)`` for the
-    caller to run.
+    checkpoint warm between calls. Returns ``(app, masked_logits,
+    sequence_logits)`` - one worker per readout - for the caller to run.
     """
     import modal
 
@@ -176,7 +176,30 @@ def _build_app(gpu: str, model: str):
             vocab=dict(result.vocab),
         )
 
-    return app, masked_logits
+    @app.function(gpu=gpu, scaledown_window=300, volumes={_HF_CACHE_DIR: hf_cache})
+    def sequence_logits(sequence: str) -> _RemoteLogits:
+        """Remote entrypoint: one unmasked pass over the whole ``sequence``."""
+        result = _connector_for(model).sequence_logits(sequence)
+        return _RemoteLogits(
+            sequence=result.sequence,
+            start=result.start,
+            stop=result.stop,
+            logits=result.logits,
+            vocab=dict(result.vocab),
+        )
+
+    return app, masked_logits, sequence_logits
+
+
+def _rehydrate(payload: _RemoteLogits) -> SequenceLogits:
+    """Turns a worker's :class:`_RemoteLogits` back into a :class:`SequenceLogits`."""
+    return SequenceLogits(
+        sequence=payload.sequence,
+        start=payload.start,
+        stop=payload.stop,
+        logits=np.asarray(payload.logits, dtype=np.float32),
+        vocab=payload.vocab,
+    )
 
 
 class ModalConnector:
@@ -217,16 +240,22 @@ class ModalConnector:
         for the caller to persist. The coordinates cross the boundary as-is, so
         a region costs one remote forward pass per scored residue.
         """
-        app, masked_logits = _build_app(self._gpu, self._model)
+        app, masked_logits, _ = _build_app(self._gpu, self._model)
         with app.run():
             payload: _RemoteLogits = masked_logits.remote(sequence, start, stop)
-        return SequenceLogits(
-            sequence=payload.sequence,
-            start=payload.start,
-            stop=payload.stop,
-            logits=np.asarray(payload.logits, dtype=np.float32),
-            vocab=payload.vocab,
-        )
+        return _rehydrate(payload)
+
+    def sequence_logits(self, sequence: str) -> SequenceLogits:
+        """Runs one unmasked remote pass over ``sequence`` and rehydrates it.
+
+        The remote side does the work of
+        :meth:`~esmlab.connectors.local.LocalConnector.sequence_logits`, so the
+        whole sequence costs one rented-GPU pass rather than one per residue.
+        """
+        app, _, sequence_logits = _build_app(self._gpu, self._model)
+        with app.run():
+            payload: _RemoteLogits = sequence_logits.remote(sequence)
+        return _rehydrate(payload)
 
     def peak_memory_bytes(self) -> None:
         """Inference runs on a rented remote GPU; client-side memory is not observable."""

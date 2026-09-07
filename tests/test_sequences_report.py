@@ -29,6 +29,7 @@ def _populate(
         InferenceSettings(
             backend="stub",
             model=model,
+            method="single-pass",
             device="",
             batch_size=0,
             biohub_api_key="",
@@ -183,3 +184,21 @@ def test_reporting_an_empty_storage_is_an_error(tmp_path: Path) -> None:
         run_report(settings)
 
     assert not settings.out_dir.exists()
+
+
+def test_every_page_names_the_readout_that_produced_it(tmp_path: Path) -> None:
+    """Entry pages and the index both state the single-pass readout.
+
+    An entropy from one unmasked pass runs lower than the same position's
+    masked entropy, so a page that showed only the number would invite a
+    comparison it cannot support.
+    """
+    _populate(tmp_path, [named("tiny", SEQUENCE)])
+    settings = _settings(tmp_path)
+
+    run_report(settings)
+
+    topic = settings.out_dir / "sequences" / "stub" / "esmc-600m"
+    entry = _payload(topic / f"{logits_key(SEQUENCE, 1, len(SEQUENCE))}.html")
+    assert entry["method"] == "single-pass"
+    assert _payload(topic / "index.html")["method"] == "single-pass"

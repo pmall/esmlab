@@ -31,8 +31,9 @@ and an optional JSON object and nothing else::
     MFVFLVLLPLVSSQ...
 
 A record that names no part of its sequence is about all of it, so the region
-is 1..len and every residue is masked in turn: the run costs one forward pass
-per residue.
+is 1..len. That topic reads the model in one unmasked pass per record rather
+than one per residue, which is what makes a whole protein affordable; see
+:data:`~esmlab.connectors.base.SCORING_METHODS`.
 
 The label is sanitized into a display string; the JSON object is carried
 through to storage verbatim and nothing here interprets it. Adding information

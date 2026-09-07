@@ -9,6 +9,11 @@ The pages carry one number per position and no substitution matrix, which is
 what separates this topic from the peptide report over the very same stored
 logits: an entropy page stays readable for a whole protein, where a 20-by-L
 matrix does not.
+
+Every page names the readout that produced it (:data:`SCORING_METHOD`), because
+an entropy from one unmasked pass and an entropy from a masked sweep are not
+the same number and a page that showed only the value would invite the
+comparison.
 """
 
 import numpy as np
@@ -27,6 +32,14 @@ UNIFORM_REFERENCE_SIZES = (16, 8, 4, 2)
 
 # How many extremes the page's highlights section lists per category.
 HIGHLIGHT_COUNT = 8
+
+# How this topic reads the model, stated on every page it writes. The store
+# does not record it because a store belongs to one topic and a topic is one
+# measurement (see :data:`~esmlab.connectors.base.SCORING_METHODS`), but a
+# reader comparing an entropy here against a peptide page has to be told: these
+# rows come from one unmasked pass, where the model could see the residue it
+# was predicting, so they run slightly low.
+SCORING_METHOD = "single-pass"
 
 # The most entropy a position can carry: a uniform choice among the canonical
 # residues. Every chart and every histogram is drawn against this ceiling
@@ -54,6 +67,7 @@ def entry_payload(entry: StoredLogits, analysis: SequenceAnalysis) -> Payload:
         "backend": entry.backend,
         "model": entry.model,
         "created_utc": entry.created_utc,
+        "method": SCORING_METHOD,
         "metadata": entry.metadata,
         "full_sequence": entry.logits.sequence,
         "start": analysis.start,
@@ -104,6 +118,7 @@ def index_payload(entries: list[Payload]) -> Payload:
     return {
         "backend": entries[0]["backend"] if entries else "",
         "model": entries[0]["model"] if entries else "",
+        "method": SCORING_METHOD,
         "entropy_limit": round(ENTROPY_LIMIT, 6),
         "entries": rows,
     }

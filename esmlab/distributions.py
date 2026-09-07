@@ -1,6 +1,6 @@
 """Per-position amino-acid distributions read out of stored logits.
 
-Topic-agnostic: every consumer of masked logits starts by turning a row of
+Topic-agnostic: every consumer of stored logits starts by turning a row of
 token logits into a distribution over the 20 canonical amino acids, and the
 entropy of that distribution is the one summary that needs no reference
 residue. The peptides topic builds log-likelihood ratios on top of the same

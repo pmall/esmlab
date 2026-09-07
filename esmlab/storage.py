@@ -1,4 +1,4 @@
-"""Persistence of computed masked-logits, keyed by ``(backend, model, sequence, region)``.
+"""Persistence of computed logits, keyed by ``(backend, model, sequence, region)``.
 
 Storage is a layer of its own: connectors compute logits and never persist
 them, and this module persists logits and never computes them. Callers
@@ -223,7 +223,7 @@ def logits_key(sequence: str, start: int, stop: int) -> str:
 
 
 class LogitsStorage(Protocol):
-    """Persistence seam for computed masked-logits.
+    """Persistence seam for computed logits.
 
     Implementations bind to one resource. :class:`SqliteLogitsStorage` and
     :class:`PostgresLogitsStorage` are the two; both satisfy this contract

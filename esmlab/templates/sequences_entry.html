@@ -152,7 +152,8 @@
   // 1..n with n the length, and nothing to state coordinates against.
   document.getElementById("meta").innerHTML =
     data.length + " residues &middot; " + data.backend + "/" + data.model +
-    " &middot; computed " + when(data.created_utc) + " &middot; <code>" + data.key + "</code>";
+    " &middot; " + data.method + " &middot; computed " + when(data.created_utc) +
+    " &middot; <code>" + data.key + "</code>";
 
   const stats = document.getElementById("stats");
   const cells = [
@@ -170,9 +171,11 @@
     stats.appendChild(cell);
   }
   // The ceiling is what makes a mean readable: 4.32 bits is a model with no
-  // opinion at all, so a mean is worth reading as a fraction of it.
+  // opinion at all, so a mean is worth reading as a fraction of it. The
+  // readout is named alongside it because a single-pass entropy runs low: the
+  // model saw the residue it was scoring.
   document.getElementById("stats-caption").textContent =
-    "ceiling " + fixed(data.entropy_limit, 3) +
+    data.method + " readout &middot; ceiling " + fixed(data.entropy_limit, 3) +
     " bits (uniform over 20 residues); mean is " +
     fixed((data.summary.mean / data.entropy_limit) * 100, 1) + "% of it";
 

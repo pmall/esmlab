@@ -1,20 +1,32 @@
-"""Compute masked ESMC logits for whole sequences and persist them.
+"""Compute single-pass ESMC logits for whole sequences and persist them.
 
 The compute phase of the whole-sequence topic, and the sibling of
-``peptides_logits.py``: the two differ in the FASTA format they read and in the
-store they fill, and both drive the topic-agnostic :mod:`esmlab.inference`.
-This one writes ``data/sequences.sqlite``, which ``sequences_report.py`` then
-reports on in full — one store per topic is what keeps a run's report to the
-sequences that run was about.
+``peptides_logits.py``: the two differ in the FASTA format they read, in the
+store they fill, and in how they read the model, and both drive the
+topic-agnostic :mod:`esmlab.inference`. This one writes
+``data/sequences.sqlite``, which ``sequences_report.py`` then reports on in
+full — one store per topic is what keeps a run's report to the sequences that
+run was about.
+
+**One forward pass per sequence, nothing masked.** A single pass returns a
+distribution at every position at once, so a whole protein costs one pass
+rather than one per residue - the difference between L and L*L tokens on a
+metered API, which is what makes scoring whole proteins practical at all. The
+model can see the residue it is predicting, so the entropies come out slightly
+low and this is an approximation, deliberately: measured against a masked sweep
+on three proteins (esmc-300m), mean entropy fell by 0.02-0.16 bits at a rank
+correlation of 0.84-0.96, though a fifth of positions moved more than 0.5 bits
+on one of them. Reach for ``peptides_logits.py`` when a position's number has
+to be right rather than indicative; see
+:data:`~esmlab.connectors.base.SCORING_METHODS`.
 
 Sequences come from positional arguments and/or ``--fasta`` files (repeatable).
 A FASTA header here is a plain ``>label``, with an optional ``|{...}`` metadata
-object and no coordinates: the record is about its whole sequence, so every
-residue is masked in turn and the run costs one forward pass per residue - the
-reason to reach for ``peptides_logits.py`` instead when only a peptide of a
-protein is of interest. See :mod:`esmlab.seqio`. A request already in storage is
-skipped rather than recomputed, so re-running over a grown FASTA only computes
-the new records, and a record listed twice is one unit of work.
+object and no coordinates: the record is about its whole sequence, and the
+whole sequence is what one pass scores. See :mod:`esmlab.seqio`. A request
+already in storage is skipped rather than recomputed, so re-running over a
+grown FASTA only computes the new records, and a record listed twice is one
+unit of work.
 
 Backend flags (``--backend`` and its credentials) and storage flags
 (``--storage`` and its connection parameters) are generated from the
@@ -126,6 +138,10 @@ def _compute(args: argparse.Namespace) -> int:
     settings = InferenceSettings(
         backend=args.backend,
         model=args.model,
+        # One unmasked pass per sequence: this topic reports a per-position
+        # entropy profile over whole proteins, where the masked sweep's L
+        # passes per sequence are what makes the question unaffordable.
+        method="single-pass",
         device=cast(str, backend_resolved.get("device", "")),
         batch_size=cast(int, backend_resolved.get("batch_size", 0)),
         biohub_api_key=cast(str, backend_resolved.get("biohub_api_key", "")),

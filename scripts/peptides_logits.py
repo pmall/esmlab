@@ -6,6 +6,14 @@ persists them to ``data/peptides.sqlite``, this topic's own store; the module
 it drives, :mod:`esmlab.inference`, is topic-agnostic and
 ``sequences_logits.py`` drives it too, into a store of its own.
 
+The two topics differ in the readout they ask for, which is why they cannot
+share a store. Here every scored residue is masked in turn - one forward pass
+each, a genuine prediction from context alone - because a per-position mutation
+score is only worth as much as the distribution behind it. A peptide is short,
+so that costs a handful of passes. ``sequences_logits.py`` scores whole
+proteins and takes the cheaper single-pass approximation instead; see
+:data:`~esmlab.connectors.base.SCORING_METHODS`.
+
 Sequences come from positional arguments and/or ``--fasta`` files (repeatable).
 A FASTA header is ``>label|start|stop`` with an optional ``|{...}`` metadata
 object: the coordinates name the sub-sequence to mask and are 1-based and
@@ -124,6 +132,10 @@ def _compute(args: argparse.Namespace) -> int:
     settings = InferenceSettings(
         backend=args.backend,
         model=args.model,
+        # A mutation score is per position, so every scored residue is masked
+        # in turn. A peptide is short by definition, which is what makes the
+        # accurate readout affordable here and not in the sequences topic.
+        method="masked",
         device=cast(str, backend_resolved.get("device", "")),
         batch_size=cast(int, backend_resolved.get("batch_size", 0)),
         biohub_api_key=cast(str, backend_resolved.get("biohub_api_key", "")),

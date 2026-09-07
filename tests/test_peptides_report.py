@@ -30,6 +30,7 @@ def _populate(
         InferenceSettings(
             backend="stub",
             model=model,
+            method="masked",
             device="",
             batch_size=0,
             biohub_api_key="",

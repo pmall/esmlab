@@ -132,8 +132,9 @@
   document.title = heading;
   document.getElementById("title").textContent = heading;
   document.getElementById("meta").textContent =
-    data.entries.length + " sequence(s), lowest mean entropy first; ceiling " +
-    data.entropy_limit.toFixed(3) + " bits (uniform over 20 residues)";
+    data.entries.length + " sequence(s), lowest mean entropy first; " +
+    data.method + " readout; ceiling " + data.entropy_limit.toFixed(3) +
+    " bits (uniform over 20 residues)";
 
   const table = document.getElementById("entries");
   if (data.entries.length === 0) {
